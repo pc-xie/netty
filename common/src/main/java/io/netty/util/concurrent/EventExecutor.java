@@ -20,7 +20,6 @@ package io.netty.util.concurrent;
  * with some handy methods to see if a {@link Thread} is executed in a event loop.
  * Besides this, it also extends the {@link EventExecutorGroup} to allow for a generic
  * way to access methods.
- *
  */
 public interface EventExecutor extends EventExecutorGroup {
 
@@ -43,6 +42,16 @@ public interface EventExecutor extends EventExecutorGroup {
     /**
      * Return {@code true} if the given {@link Thread} is executed in the event loop,
      * {@code false} otherwise.
+     */
+    /**
+     * 关于为什么要要在同一个eventloop的解释，目的是为了线程安全??
+     * https://www.coder.work/article/6208128
+     * 这种代码可确保只有正确的eventLoop / thread才能与/ cc Channel对象一起使用/更改。
+     * 当只有一个特定的线程可以与Channel对象一起工作时，这解决了许多竞争条件和多线程问题。这与所谓的“线程安全”有关，
+     * 是否将某个类视为“线程安全”也与否有关
+     *
+     * @param thread
+     * @return
      */
     boolean inEventLoop(Thread thread);
 

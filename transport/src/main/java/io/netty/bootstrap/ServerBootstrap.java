@@ -84,6 +84,7 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
         if (this.childGroup != null) {
             throw new IllegalStateException("childGroup set already");
         }
+        //拿到了worker group
         this.childGroup = ObjectUtil.checkNotNull(childGroup, "childGroup");
         return this;
     }
@@ -132,6 +133,7 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
         setChannelOptions(channel, newOptionsArray(), logger);
         setAttributes(channel, attrs0().entrySet().toArray(EMPTY_ATTRIBUTE_ARRAY));
 
+        //拿到 NioServerSocketChannel 属性pipeline(DefaultChannelPipeline)
         ChannelPipeline p = channel.pipeline();
 
         final EventLoopGroup currentChildGroup = childGroup;
@@ -142,10 +144,15 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
         }
         final Entry<AttributeKey<?>, Object>[] currentChildAttrs = childAttrs.entrySet().toArray(EMPTY_ATTRIBUTE_ARRAY);
 
+        /**
+         * 增加pipeline
+         * TODO pcxie 需要了解里面handler 往pipeline增加的过程
+         */
         p.addLast(new ChannelInitializer<Channel>() {
             @Override
             public void initChannel(final Channel ch) {
                 final ChannelPipeline pipeline = ch.pipeline();
+                //将初始化的handler 进行加入进来
                 ChannelHandler handler = config.handler();
                 if (handler != null) {
                     pipeline.addLast(handler);

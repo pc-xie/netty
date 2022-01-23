@@ -91,6 +91,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
         if (this.group != null) {
             throw new IllegalStateException("group set already");
         }
+        //拿到了boss group
         this.group = group;
         return self();
     }
@@ -269,6 +270,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     }
 
     private ChannelFuture doBind(final SocketAddress localAddress) {
+        //初始化和注册
         final ChannelFuture regFuture = initAndRegister();
         final Channel channel = regFuture.channel();
         if (regFuture.cause() != null) {
@@ -307,7 +309,9 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
     final ChannelFuture initAndRegister() {
         Channel channel = null;
         try {
+            //通过反射去初始化创建channel,NioServerSocketChannel 属性
             channel = channelFactory.newChannel();
+            //进行初始化channel
             init(channel);
         } catch (Throwable t) {
             if (channel != null) {
