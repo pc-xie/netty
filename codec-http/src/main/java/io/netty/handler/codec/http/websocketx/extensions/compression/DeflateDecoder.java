@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -50,6 +50,7 @@ abstract class DeflateDecoder extends WebSocketExtensionDecoder {
 
     private final boolean noContext;
     private final WebSocketExtensionFilter extensionDecoderFilter;
+    private final int maxAllocation;
 
     private EmbeddedChannel decoder;
 
@@ -59,9 +60,10 @@ abstract class DeflateDecoder extends WebSocketExtensionDecoder {
      * @param noContext true to disable context takeover.
      * @param extensionDecoderFilter extension decoder filter.
      */
-    DeflateDecoder(boolean noContext, WebSocketExtensionFilter extensionDecoderFilter) {
+    DeflateDecoder(boolean noContext, WebSocketExtensionFilter extensionDecoderFilter, int maxAllocation) {
         this.noContext = noContext;
         this.extensionDecoderFilter = checkNotNull(extensionDecoderFilter, "extensionDecoderFilter");
+        this.maxAllocation = maxAllocation;
     }
 
     /**
@@ -110,7 +112,7 @@ abstract class DeflateDecoder extends WebSocketExtensionDecoder {
             if (!(msg instanceof TextWebSocketFrame) && !(msg instanceof BinaryWebSocketFrame)) {
                 throw new CodecException("unexpected initial frame type: " + msg.getClass().getName());
             }
-            decoder = new EmbeddedChannel(ZlibCodecFactory.newZlibDecoder(ZlibWrapper.NONE));
+            decoder = new EmbeddedChannel(ZlibCodecFactory.newZlibDecoder(ZlibWrapper.NONE, maxAllocation));
         }
 
         boolean readable = msg.content().isReadable();

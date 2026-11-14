@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,10 +15,13 @@
  */
 package io.netty.handler.stream;
 
+import static io.netty.util.internal.ObjectUtil.checkPositive;
+
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
@@ -70,8 +73,10 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
     private static final InternalLogger logger =
         InternalLoggerFactory.getInstance(ChunkedWriteHandler.class);
 
-    private final Queue<PendingWrite> queue = new ArrayDeque<PendingWrite>();
+    private Queue<PendingWrite> queue;
     private volatile ChannelHandlerContext ctx;
+    private boolean inFlush;
+    private boolean flushPending;
 
     public ChunkedWriteHandler() {
     }
@@ -81,15 +86,32 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
      */
     @Deprecated
     public ChunkedWriteHandler(int maxPendingWrites) {
-        if (maxPendingWrites <= 0) {
-            throw new IllegalArgumentException(
-                    "maxPendingWrites: " + maxPendingWrites + " (expected: > 0)");
+        checkPositive(maxPendingWrites, "maxPendingWrites");
+    }
+
+    private void allocateQueue() {
+        if (queue == null) {
+            queue = new ArrayDeque<PendingWrite>();
         }
+    }
+
+    private boolean queueIsEmpty() {
+        return queue == null || queue.isEmpty();
     }
 
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
         this.ctx = ctx;
+    }
+
+    @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+        // Nothing will write the queued messages once this handler was removed, not even channelInactive(),
+        // so fail them now and close / release what they hold.
+        if (!queueIsEmpty()) {
+            // Only create the exception if there is something to fail, as creating it is expensive.
+            discard(new ChannelException("Pending write on removal of ChunkedWriteHandler"));
+        }
     }
 
     /**
@@ -124,7 +146,12 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        queue.add(new PendingWrite(msg, promise));
+        if (!queueIsEmpty() || msg instanceof ChunkedInput) {
+            allocateQueue();
+            queue.add(new PendingWrite(msg, promise));
+        } else {
+            ctx.write(msg, promise);
+        }
     }
 
     @Override
@@ -148,6 +175,9 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
     }
 
     private void discard(Throwable cause) {
+        if (queueIsEmpty()) {
+            return;
+        }
         for (;;) {
             PendingWrite currentWrite = queue.poll();
 
@@ -166,9 +196,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                 } catch (Exception e) {
                     closeInput(in);
                     currentWrite.fail(e);
-                    if (logger.isWarnEnabled()) {
-                        logger.warn(ChunkedInput.class.getSimpleName() + " failed", e);
-                    }
+                    logger.warn("ChunkedInput failed", e);
                     continue;
                 }
 
@@ -190,9 +218,43 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
     }
 
     private void doFlush(final ChannelHandlerContext ctx) {
+        if (inFlush) {
+            // doFlush() must not re-enter itself: ChunkedInput.readChunk(...) and isEndOfInput() run
+            // between queue.peek() and queue.remove(), and user code executed there may
+            // synchronously trigger flush(), resumeTransfer(), channelInactive(...) or
+            // channelWritabilityChanged(...) on this very handler. A nested doFlush() would peek
+            // and consume the same queue entry again, which made the outer invocation fail with
+            // NoSuchElementException and let both invocations read from the same (already closed)
+            // input. Remember the nested call instead: the outer invocation re-runs the drain
+            // loop before returning, so a resumeTransfer(...) that arrives while it is about to
+            // suspend is not lost (see the old lock-based guard and its flushRequired follow-up).
+            flushPending = true;
+            return;
+        }
+        inFlush = true;
+        try {
+            do {
+                flushPending = false;
+                doFlush0(ctx);
+            } while (flushPending);
+        } finally {
+            inFlush = false;
+        }
+    }
+
+    private void doFlush0(final ChannelHandlerContext ctx) {
         final Channel channel = ctx.channel();
         if (!channel.isActive()) {
+            // Even after discarding all previous queued objects we should propagate the flush through
+            // to ensure previous written objects via writeAndFlush(...) that were not queued will be flushed and
+            // so eventually fail the promise.
             discard(null);
+            ctx.flush();
+            return;
+        }
+
+        if (queueIsEmpty()) {
+            ctx.flush();
             return;
         }
 
@@ -207,7 +269,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
 
             if (currentWrite.promise.isDone()) {
                 // This might happen e.g. in the case when a write operation
-                // failed, but there're still unconsumed chunks left.
+                // failed, but there are still unconsumed chunks left.
                 // Most chunked input sources would stop generating chunks
                 // and report end of input, but this doesn't work with any
                 // source wrapped in HttpChunkedInput.
@@ -215,7 +277,15 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                 // as this had to be done already by someone who resolved the
                 // promise (using ChunkedInput.close method).
                 // See https://github.com/netty/netty/issues/8700.
+                // A promise that was cancelled by the user is different: nobody closed or released the message.
                 queue.remove();
+                if (currentWrite.promise.isCancelled()) {
+                    if (currentWrite.msg instanceof ChunkedInput) {
+                        closeInput((ChunkedInput<?>) currentWrite.msg);
+                    } else {
+                        ReferenceCountUtil.release(currentWrite.msg);
+                    }
+                }
                 continue;
             }
 
@@ -229,13 +299,9 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                 try {
                     message = chunks.readChunk(allocator);
                     endOfInput = chunks.isEndOfInput();
+                    // No need to suspend when reached at the end.
+                    suspend = message == null && !endOfInput;
 
-                    if (message == null) {
-                        // No need to suspend when reached at the end.
-                        suspend = !endOfInput;
-                    } else {
-                        suspend = false;
-                    }
                 } catch (final Throwable t) {
                     queue.remove();
 
@@ -261,35 +327,38 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
                     message = Unpooled.EMPTY_BUFFER;
                 }
 
+                if (endOfInput) {
+                    // We need to remove the element from the queue before we call writeAndFlush() as this operation
+                    // may cause an action that also touches the queue.
+                    queue.remove();
+                }
                 // Flush each chunk to conserve memory
                 ChannelFuture f = ctx.writeAndFlush(message);
                 if (endOfInput) {
-                    queue.remove();
-
                     if (f.isDone()) {
-                        handleEndOfInputFuture(f, currentWrite);
+                        handleEndOfInputFuture(f, chunks, currentWrite);
                     } else {
                         // Register a listener which will close the input once the write is complete.
                         // This is needed because the Chunk may have some resource bound that can not
-                        // be closed before its not written.
+                        // be closed before it's not written.
                         //
                         // See https://github.com/netty/netty/issues/303
                         f.addListener(new ChannelFutureListener() {
                             @Override
                             public void operationComplete(ChannelFuture future) {
-                                handleEndOfInputFuture(future, currentWrite);
+                                handleEndOfInputFuture(future, chunks, currentWrite);
                             }
                         });
                     }
                 } else {
                     final boolean resume = !channel.isWritable();
                     if (f.isDone()) {
-                        handleFuture(f, currentWrite, resume);
+                        handleFuture(f, chunks, currentWrite, resume);
                     } else {
                         f.addListener(new ChannelFutureListener() {
                             @Override
                             public void operationComplete(ChannelFuture future) {
-                                handleFuture(future, currentWrite, resume);
+                                handleFuture(future, chunks, currentWrite, resume);
                             }
                         });
                     }
@@ -312,8 +381,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
         }
     }
 
-    private static void handleEndOfInputFuture(ChannelFuture future, PendingWrite currentWrite) {
-        ChunkedInput<?> input = (ChunkedInput<?>) currentWrite.msg;
+    private static void handleEndOfInputFuture(ChannelFuture future, ChunkedInput<?> input, PendingWrite currentWrite) {
         if (!future.isSuccess()) {
             closeInput(input);
             currentWrite.fail(future.cause());
@@ -327,8 +395,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
         }
     }
 
-    private void handleFuture(ChannelFuture future, PendingWrite currentWrite, boolean resume) {
-        ChunkedInput<?> input = (ChunkedInput<?>) currentWrite.msg;
+    private void handleFuture(ChannelFuture future, ChunkedInput<?> input, PendingWrite currentWrite, boolean resume) {
         if (!future.isSuccess()) {
             closeInput(input);
             currentWrite.fail(future.cause());
@@ -344,9 +411,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
         try {
             chunks.close();
         } catch (Throwable t) {
-            if (logger.isWarnEnabled()) {
-                logger.warn("Failed to close a chunked input.", t);
-            }
+            logger.warn("Failed to close a ChunkedInput.", t);
         }
     }
 

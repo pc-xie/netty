@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -19,9 +19,9 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ReplayingDecoder;
 import io.netty.handler.codec.socks.SocksInitRequestDecoder.State;
+import io.netty.util.internal.UnstableApi;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -45,15 +45,15 @@ public class SocksInitRequestDecoder extends ReplayingDecoder<State> {
                 checkpoint(State.READ_AUTH_SCHEMES);
             }
             case READ_AUTH_SCHEMES: {
-                final byte authSchemeNum = byteBuf.readByte();
-                final List<SocksAuthScheme> authSchemes;
-                if (authSchemeNum > 0) {
-                    authSchemes = new ArrayList<SocksAuthScheme>(authSchemeNum);
-                    for (int i = 0; i < authSchemeNum; i++) {
-                        authSchemes.add(SocksAuthScheme.valueOf(byteBuf.readByte()));
-                    }
-                } else {
-                    authSchemes = Collections.emptyList();
+                final int authSchemeNum = byteBuf.readUnsignedByte();
+                if (authSchemeNum == 0) {
+                    // RFC 1928 section 3 requires NMETHODS to be at least 1.
+                    out.add(SocksCommonUtils.UNKNOWN_SOCKS_REQUEST);
+                    break;
+                }
+                final List<SocksAuthScheme> authSchemes = new ArrayList<SocksAuthScheme>(authSchemeNum);
+                for (int i = 0; i < authSchemeNum; i++) {
+                    authSchemes.add(SocksAuthScheme.valueOf(byteBuf.readByte()));
                 }
                 out.add(new SocksInitRequest(authSchemes));
                 break;
@@ -65,7 +65,8 @@ public class SocksInitRequestDecoder extends ReplayingDecoder<State> {
         ctx.pipeline().remove(this);
     }
 
-    enum State {
+    @UnstableApi
+    public enum State {
         CHECK_PROTOCOL_VERSION,
         READ_AUTH_SCHEMES
     }

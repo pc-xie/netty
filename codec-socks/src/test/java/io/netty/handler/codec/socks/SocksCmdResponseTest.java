@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,12 +18,18 @@ package io.netty.handler.codec.socks;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.CharsetUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.net.IDN;
 import java.nio.CharBuffer;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class SocksCmdResponseTest {
     @Test
@@ -31,12 +37,12 @@ public class SocksCmdResponseTest {
         try {
             new SocksCmdResponse(null, SocksAddressType.UNKNOWN);
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
         try {
             new SocksCmdResponse(SocksCmdStatus.UNASSIGNED, null);
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
     }
 
@@ -161,16 +167,21 @@ public class SocksCmdResponseTest {
     /**
      * Verifies that Response cannot be constructed with invalid IP.
      */
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testInvalidBoundAddress() {
-        new SocksCmdResponse(SocksCmdStatus.SUCCESS, SocksAddressType.IPv4, "127.0.0", 1000);
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new SocksCmdResponse(SocksCmdStatus.SUCCESS, SocksAddressType.IPv4, "127.0.0", 1000);
+            }
+        });
     }
 
     private static void assertByteBufEquals(byte[] expected, ByteBuf actual) {
         byte[] actualBytes = new byte[actual.readableBytes()];
         actual.readBytes(actualBytes);
-        assertEquals("Generated response has incorrect length", expected.length, actualBytes.length);
-        assertArrayEquals("Generated response differs from expected", expected, actualBytes);
+        assertEquals(expected.length, actualBytes.length, "Generated response has incorrect length");
+        assertArrayEquals(expected, actualBytes, "Generated response differs from expected");
     }
 
     @Test
@@ -178,13 +189,13 @@ public class SocksCmdResponseTest {
         try {
             new SocksCmdResponse(SocksCmdStatus.SUCCESS, SocksAddressType.IPv4, "127.0.0", 0);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
 
         try {
             new SocksCmdResponse(SocksCmdStatus.SUCCESS, SocksAddressType.IPv4, "127.0.0", 65536);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 }

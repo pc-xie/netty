@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -28,14 +28,16 @@ import io.netty.handler.codec.sctp.SctpInboundByteStreamHandler;
 import io.netty.handler.codec.sctp.SctpMessageCompletionHandler;
 import io.netty.handler.codec.sctp.SctpOutboundByteStreamHandler;
 import io.netty.testsuite.util.TestUtils;
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.TestInfo;
 
-import static org.junit.Assert.*;
+import static io.netty.testsuite.transport.TestsuitePermutation.randomBufferType;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class SctpEchoTest extends AbstractSctpTest {
 
@@ -47,9 +49,14 @@ public class SctpEchoTest extends AbstractSctpTest {
     }
 
     @Test
-    public void testSimpleEcho() throws Throwable {
-        Assume.assumeTrue(TestUtils.isSctpSupported());
-        run();
+    public void testSimpleEcho(TestInfo testInfo) throws Throwable {
+        assumeTrue(TestUtils.isSctpSupported());
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testSimpleEcho(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testSimpleEcho(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -57,9 +64,14 @@ public class SctpEchoTest extends AbstractSctpTest {
     }
 
     @Test
-    public void testSimpleEchoUnordered() throws Throwable {
-        Assume.assumeTrue(TestUtils.isSctpSupported());
-        run();
+    public void testSimpleEchoUnordered(TestInfo testInfo) throws Throwable {
+        assumeTrue(TestUtils.isSctpSupported());
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testSimpleEchoUnordered(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testSimpleEchoUnordered(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -108,11 +120,7 @@ public class SctpEchoTest extends AbstractSctpTest {
                 break;
             }
 
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                // Ignore.
-            }
+            Thread.sleep(50);
         }
 
         while (sh.counter < data.length) {
@@ -123,11 +131,7 @@ public class SctpEchoTest extends AbstractSctpTest {
                 break;
             }
 
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                // Ignore.
-            }
+            Thread.sleep(50);
         }
 
         sh.channel.close().sync();
@@ -168,11 +172,13 @@ public class SctpEchoTest extends AbstractSctpTest {
                 assertEquals(data[i + lastIdx], actual[i]);
             }
 
-            if (channel.parent() != null) {
-                channel.writeAndFlush(Unpooled.wrappedBuffer(actual));
-            }
-
+            // Update the counter before calling write(...) as write could in theory trigger another channelRead(...)
+            // which then would use the wrong lastIdx.
             counter += actual.length;
+
+            if (channel.parent() != null) {
+                channel.writeAndFlush(randomBufferType(channel.alloc(), actual, 0, actual.length));
+            }
         }
 
         @Override

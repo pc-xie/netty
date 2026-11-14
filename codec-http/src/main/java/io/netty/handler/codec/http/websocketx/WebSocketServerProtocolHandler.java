@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -21,6 +21,7 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandler;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaders;
@@ -79,7 +80,7 @@ public class WebSocketServerProtocolHandler extends WebSocketProtocolHandler {
         private final HttpHeaders requestHeaders;
         private final String selectedSubprotocol;
 
-        HandshakeComplete(String requestUri, HttpHeaders requestHeaders, String selectedSubprotocol) {
+        public HandshakeComplete(String requestUri, HttpHeaders requestHeaders, String selectedSubprotocol) {
             this.requestUri = requestUri;
             this.requestHeaders = requestHeaders;
             this.selectedSubprotocol = selectedSubprotocol;
@@ -227,7 +228,7 @@ public class WebSocketServerProtocolHandler extends WebSocketProtocolHandler {
         if (serverConfig.decoderConfig().withUTF8Validator() && cp.get(Utf8FrameValidator.class) == null) {
             // Add the UFT8 checking before this one.
             cp.addBefore(ctx.name(), Utf8FrameValidator.class.getName(),
-                    new Utf8FrameValidator());
+                    new Utf8FrameValidator(serverConfig.decoderConfig().closeOnProtocolViolation()));
         }
     }
 
@@ -236,14 +237,32 @@ public class WebSocketServerProtocolHandler extends WebSocketProtocolHandler {
         if (serverConfig.handleCloseFrames() && frame instanceof CloseWebSocketFrame) {
             WebSocketServerHandshaker handshaker = getHandshaker(ctx.channel());
             if (handshaker != null) {
+                if (closeIfCloseSent(ctx)) {
+                    // We already sent our own close frame, so this is either the peer's response to it or a
+                    // simultaneous close. As per RFC 6455 we must not send another close frame, just close the
+                    // connection once our own close frame was written.
+                    return;
+                }
                 frame.retain();
-                handshaker.close(ctx.channel(), (CloseWebSocketFrame) frame);
+                ChannelPromise promise = ctx.newPromise();
+                closeSent(promise);
+                handshaker.close(ctx, (CloseWebSocketFrame) frame, promise);
+                // handshaker.close() bypasses this handler's own write()/flush() overrides (it writes
+                // directly on ctx), so the force-close timeout must be armed explicitly here. Doing so
+                // after the close0() write-and-flush attempt above mirrors close()'s ordering and avoids
+                // racing a write that completes synchronously.
+                applyCloseSentTimeout(ctx);
             } else {
                 ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
             }
             return;
         }
         super.decode(ctx, frame, out);
+    }
+
+    @Override
+    protected WebSocketServerHandshakeException buildHandshakeException(String message) {
+        return new WebSocketServerHandshakeException(message);
     }
 
     @Override

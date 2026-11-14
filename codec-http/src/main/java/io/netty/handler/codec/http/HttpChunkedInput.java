@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -34,7 +34,7 @@ import io.netty.handler.stream.ChunkedInput;
  *     response.headers().set(TRANSFER_ENCODING, CHUNKED);
  *     ctx.write(response);
  *
- *     HttpContentChunkedInput httpChunkWriter = new HttpChunkedInput(
+ *     HttpChunkedInput httpChunkWriter = new HttpChunkedInput(
  *         new ChunkedFile(&quot;/tmp/myfile.txt&quot;));
  *     ChannelFuture sendFileFuture = ctx.write(httpChunkWriter);
  * }
@@ -60,7 +60,7 @@ public class HttpChunkedInput implements ChunkedInput<HttpContent> {
      * chunk.
      * @param input {@link ChunkedInput} containing data to write
      * @param lastHttpContent {@link LastHttpContent} that will be written as the terminating chunk. Use this for
-     *            training headers.
+     *            trailing headers. Ownership is transferred to this {@link HttpChunkedInput}.
      */
     public HttpChunkedInput(ChunkedInput<ByteBuf> input, LastHttpContent lastHttpContent) {
         this.input = input;
@@ -79,7 +79,14 @@ public class HttpChunkedInput implements ChunkedInput<HttpContent> {
 
     @Override
     public void close() throws Exception {
-        input.close();
+        try {
+            input.close();
+        } finally {
+            if (!sentLastChunk) {
+                sentLastChunk = true;
+                lastHttpContent.release();
+            }
+        }
     }
 
     @Deprecated

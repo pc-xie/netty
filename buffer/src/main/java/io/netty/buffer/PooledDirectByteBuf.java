@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -230,7 +230,7 @@ final class PooledDirectByteBuf extends PooledByteBuf<ByteBuffer> {
     public ByteBuf setBytes(int index, ByteBuf src, int srcIndex, int length) {
         checkSrcIndex(index, length, srcIndex, src.capacity());
         if (src.hasArray()) {
-            setBytes(index, src.array(), src.arrayOffset() + srcIndex, length);
+            _internalNioBuffer(index, length, false).put(src.array(), src.arrayOffset() + srcIndex, length);
         } else if (src.nioBufferCount() > 0) {
             for (ByteBuffer bb: src.nioBuffers(srcIndex, length)) {
                 int bbLen = bb.remaining();
@@ -254,10 +254,10 @@ final class PooledDirectByteBuf extends PooledByteBuf<ByteBuffer> {
     public ByteBuf setBytes(int index, ByteBuffer src) {
         int length = src.remaining();
         checkIndex(index, length);
-        ByteBuffer tmpBuf = internalNioBuffer();
-        if (src == tmpBuf) {
+        if (src == tmpNioBuf) {
             src = src.duplicate();
         }
+        ByteBuffer tmpBuf = internalNioBuffer();
 
         index = idx(index);
         tmpBuf.limit(index + length).position(index);

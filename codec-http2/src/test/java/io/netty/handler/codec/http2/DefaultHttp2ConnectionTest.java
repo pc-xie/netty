@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -18,32 +18,35 @@ package io.netty.handler.codec.http2;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.DefaultEventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http2.Http2Connection.Endpoint;
 import io.netty.handler.codec.http2.Http2Stream.State;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
+import javax.annotation.Nonnull;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static java.lang.Integer.MAX_VALUE;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyLong;
@@ -56,8 +59,6 @@ import static org.mockito.Mockito.verify;
  * Tests for {@link DefaultHttp2Connection}.
  */
 public class DefaultHttp2ConnectionTest {
-    @Rule
-    public ExpectedException thrown = ExpectedException.none();
 
     private DefaultHttp2Connection server;
     private DefaultHttp2Connection client;
@@ -69,17 +70,17 @@ public class DefaultHttp2ConnectionTest {
     @Mock
     private Http2Connection.Listener clientListener2;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() {
         group = new DefaultEventLoopGroup(2);
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
         group.shutdownGracefully();
     }
 
-    @Before
+    @BeforeEach
     public void setup() {
         MockitoAnnotations.initMocks(this);
 
@@ -113,19 +114,19 @@ public class DefaultHttp2ConnectionTest {
     }
 
     @Test
-    public void removeAllStreamsWithJustOneLocalStream() throws InterruptedException, Http2Exception {
+    public void removeAllStreamsWithJustOneLocalStream() throws Exception {
         client.local().createStream(3, false);
         testRemoveAllStreams();
     }
 
     @Test
-    public void removeAllStreamsWithJustOneRemoveStream() throws InterruptedException, Http2Exception {
+    public void removeAllStreamsWithJustOneRemoveStream() throws Exception {
         client.remote().createStream(2, false);
         testRemoveAllStreams();
     }
 
     @Test
-    public void removeAllStreamsWithManyActiveStreams() throws InterruptedException, Http2Exception {
+    public void removeAllStreamsWithManyActiveStreams() throws Exception {
         Endpoint<Http2RemoteFlowController> remote = client.remote();
         Endpoint<Http2LocalFlowController> local = client.local();
         for (int c = 3, s = 2; c < 5000; c += 2, s += 2) {
@@ -136,7 +137,7 @@ public class DefaultHttp2ConnectionTest {
     }
 
     @Test
-    public void removeIndividualStreamsWhileCloseDoesNotNPE() throws InterruptedException, Http2Exception {
+    public void removeIndividualStreamsWhileCloseDoesNotNPE() throws Exception {
         final Http2Stream streamA = client.local().createStream(3, false);
         final Http2Stream streamB = client.remote().createStream(2, false);
         doAnswer(new Answer<Void>() {
@@ -156,7 +157,7 @@ public class DefaultHttp2ConnectionTest {
     }
 
     @Test
-    public void removeAllStreamsWhileIteratingActiveStreams() throws InterruptedException, Http2Exception {
+    public void removeAllStreamsWhileIteratingActiveStreams() throws Exception {
         final Endpoint<Http2RemoteFlowController> remote = client.remote();
         final Endpoint<Http2LocalFlowController> local = client.local();
         for (int c = 3, s = 2; c < 5000; c += 2, s += 2) {
@@ -183,7 +184,7 @@ public class DefaultHttp2ConnectionTest {
 
     @Test
     public void removeAllStreamsWhileIteratingActiveStreamsAndExceptionOccurs()
-            throws InterruptedException, Http2Exception {
+            throws Exception {
         final Endpoint<Http2RemoteFlowController> remote = client.remote();
         final Endpoint<Http2LocalFlowController> local = client.local();
         for (int c = 3, s = 2; c < 5000; c += 2, s += 2) {
@@ -350,61 +351,104 @@ public class DefaultHttp2ConnectionTest {
         incrementAndGetStreamShouldSucceed(client.local());
     }
 
-    @Test(expected = Http2NoMoreStreamIdsException.class)
+    @Test
     public void serverRemoteIncrementAndGetStreamShouldRespectOverflow() throws Http2Exception {
         incrementAndGetStreamShouldRespectOverflow(server.remote(), MAX_VALUE);
     }
 
-    @Test(expected = Http2NoMoreStreamIdsException.class)
+    @Test
     public void serverLocalIncrementAndGetStreamShouldRespectOverflow() throws Http2Exception {
         incrementAndGetStreamShouldRespectOverflow(server.local(), MAX_VALUE - 1);
     }
 
-    @Test(expected = Http2NoMoreStreamIdsException.class)
+    @Test
     public void clientRemoteIncrementAndGetStreamShouldRespectOverflow() throws Http2Exception {
         incrementAndGetStreamShouldRespectOverflow(client.remote(), MAX_VALUE - 1);
     }
 
-    @Test(expected = Http2NoMoreStreamIdsException.class)
+    @Test
     public void clientLocalIncrementAndGetStreamShouldRespectOverflow() throws Http2Exception {
         incrementAndGetStreamShouldRespectOverflow(client.local(), MAX_VALUE);
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
+    public void clientLocalCreateStreamExhaustedSpace() throws Http2Exception {
+        client.local().createStream(MAX_VALUE, true);
+        Http2Exception expected = assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                client.local().createStream(MAX_VALUE, true);
+            }
+        });
+        assertEquals(Http2Error.REFUSED_STREAM, expected.error());
+        assertEquals(Http2Exception.ShutdownHint.GRACEFUL_SHUTDOWN, expected.shutdownHint());
+    }
+
+    @Test
     public void newStreamBehindExpectedShouldThrow() throws Http2Exception {
-        server.local().createStream(0, true);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.local().createStream(0, true);
+            }
+        });
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void newStreamNotForServerShouldThrow() throws Http2Exception {
-        server.local().createStream(11, true);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.local().createStream(11, true);
+            }
+        });
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void newStreamNotForClientShouldThrow() throws Http2Exception {
-        client.local().createStream(10, true);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                client.local().createStream(10, true);
+            }
+        });
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void createShouldThrowWhenMaxAllowedStreamsOpenExceeded() throws Http2Exception {
         server.local().maxActiveStreams(0);
-        server.local().createStream(2, true);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.local().createStream(2, true);
+            }
+        });
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void serverCreatePushShouldFailOnRemoteEndpointWhenMaxAllowedStreamsExceeded() throws Http2Exception {
         server = new DefaultHttp2Connection(true, 0);
         server.remote().maxActiveStreams(1);
-        Http2Stream requestStream = server.remote().createStream(3, false);
-        server.remote().reservePushStream(2, requestStream);
+        final Http2Stream requestStream = server.remote().createStream(3, false);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.remote().reservePushStream(2, requestStream);
+            }
+        });
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void clientCreatePushShouldFailOnRemoteEndpointWhenMaxAllowedStreamsExceeded() throws Http2Exception {
         client = new DefaultHttp2Connection(false, 0);
         client.remote().maxActiveStreams(1);
-        Http2Stream requestStream = client.remote().createStream(2, false);
-        client.remote().reservePushStream(4, requestStream);
+        final Http2Stream requestStream = client.remote().createStream(2, false);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                client.remote().reservePushStream(4, requestStream);
+            }
+        });
     }
 
     @Test
@@ -415,17 +459,27 @@ public class DefaultHttp2ConnectionTest {
         assertNotNull(server.local().reservePushStream(2, requestStream));
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void reserveWithPushDisallowedShouldThrow() throws Http2Exception {
-        Http2Stream stream = server.remote().createStream(3, true);
+        final Http2Stream stream = server.remote().createStream(3, true);
         server.remote().allowPushTo(false);
-        server.local().reservePushStream(2, stream);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.local().reservePushStream(2, stream);
+            }
+        });
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void goAwayReceivedShouldDisallowLocalCreation() throws Http2Exception {
         server.goAwayReceived(0, 1L, Unpooled.EMPTY_BUFFER);
-        server.local().createStream(3, true);
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.local().createStream(3, true);
+            }
+        });
     }
 
     @Test
@@ -434,10 +488,16 @@ public class DefaultHttp2ConnectionTest {
         server.remote().createStream(3, true);
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void goAwaySentShouldDisallowRemoteCreation() throws Http2Exception {
         server.goAwaySent(0, 1L, Unpooled.EMPTY_BUFFER);
-        server.remote().createStream(2, true);
+
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                server.remote().createStream(2, true);
+            }
+        });
     }
 
     @Test
@@ -479,15 +539,25 @@ public class DefaultHttp2ConnectionTest {
     }
 
     @SuppressWarnings("NumericOverflow")
-    @Test(expected = Http2Exception.class)
-    public void localStreamInvalidStreamIdShouldThrow() throws Http2Exception {
-        client.local().createStream(MAX_VALUE + 2, false);
+    @Test
+    public void localStreamInvalidStreamIdShouldThrow() {
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                client.local().createStream(MAX_VALUE + 2, false);
+            }
+        });
     }
 
     @SuppressWarnings("NumericOverflow")
-    @Test(expected = Http2Exception.class)
-    public void remoteStreamInvalidStreamIdShouldThrow() throws Http2Exception {
-        client.remote().createStream(MAX_VALUE + 1, false);
+    @Test
+    public void remoteStreamInvalidStreamIdShouldThrow() {
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                client.remote().createStream(MAX_VALUE + 1, false);
+            }
+        });
     }
 
     /**
@@ -503,7 +573,7 @@ public class DefaultHttp2ConnectionTest {
     public void listenerThrowShouldNotPreventOtherListenersFromBeingNotified() throws Http2Exception {
         final boolean[] calledArray = new boolean[128];
         // The following setup will ensure that clientListener throws exceptions, and marks a value in an array
-        // such that clientListener2 will verify that is is set or fail the test.
+        // such that clientListener2 will verify that is set or fail the test.
         int methodIndex = 0;
         doAnswer(new ListenerExceptionThrower(calledArray, methodIndex))
             .when(clientListener).onStreamAdded(any(Http2Stream.class));
@@ -585,6 +655,32 @@ public class DefaultHttp2ConnectionTest {
         }
     }
 
+    @Test
+    public void clientLastStreamCreatedWithoutStreamCreated() {
+        assertEquals(0, client.local().lastStreamCreated());
+    }
+
+    @Test
+    public void serverLastStreamCreatedWithoutStreamCreated() {
+        assertEquals(0, server.local().lastStreamCreated());
+    }
+
+    @Test
+    public void clientCreateMaxStreamId() throws Exception {
+        int id = MAX_VALUE;
+        client.local().createStream(id, false);
+        assertTrue(client.streamMayHaveExisted(id));
+        assertEquals(id, client.local().lastStreamCreated());
+    }
+
+    @Test
+    public void serverCreateMaxStreamId() throws Exception {
+        int id = MAX_VALUE - 1;
+        server.local().createStream(id, false);
+        assertTrue(server.streamMayHaveExisted(id));
+        assertEquals(id, server.local().lastStreamCreated());
+    }
+
     private void testRemoveAllStreams() throws InterruptedException {
         final CountDownLatch latch = new CountDownLatch(1);
         final Promise<Void> promise = group.next().newPromise();
@@ -598,17 +694,199 @@ public class DefaultHttp2ConnectionTest {
         assertTrue(latch.await(5, TimeUnit.SECONDS));
     }
 
-    private static void incrementAndGetStreamShouldRespectOverflow(Endpoint<?> endpoint, int streamId)
-            throws Http2Exception {
+    private static void incrementAndGetStreamShouldRespectOverflow(final Endpoint<?> endpoint, int streamId) {
         assertTrue(streamId > 0);
         try {
             endpoint.createStream(streamId, true);
             streamId = endpoint.incrementAndGetNextStreamId();
         } catch (Throwable t) {
-            fail();
+            fail(t);
         }
         assertTrue(streamId < 0);
-        endpoint.createStream(streamId, true);
+        final int finalStreamId = streamId;
+        assertThrows(Http2NoMoreStreamIdsException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                endpoint.createStream(finalStreamId, true);
+            }
+        });
+    }
+
+    @Test
+    public void defaultSettingsShouldEnforceMaxConcurrentStreamsOnRemoteEndpoint() throws Exception {
+        // Build a server handler using default settings (no explicit maxConcurrentStreams override).
+        final Http2ConnectionHandler handler = new Http2ConnectionHandlerBuilder()
+                .frameListener(new Http2FrameAdapter())
+                .build();
+
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            // Feed the client connection preface.
+            assertFalse(channel.writeInbound(Http2CodecUtil.connectionPrefaceBuf()));
+
+            ByteBuf clientSettings = clientSettingsWithoutMaxConcurrentStreams();
+            assertFalse(channel.writeInbound(clientSettings));
+
+            Http2Connection connection = handler.connection();
+
+            // The server's default (SMALLEST_MAX_CONCURRENT_STREAMS = 100) must be
+            // enforced on the remote endpoint — the one that tracks client-initiated streams.
+            assertEquals(Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS,
+                    connection.remote().maxActiveStreams());
+
+            // Create exactly the maximum allowed client-initiated (odd-numbered) streams.
+            for (int id = 1; id < Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS * 2; id += 2) {
+                connection.remote().createStream(id, true);
+            }
+            assertEquals(Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS,
+                    connection.numActiveStreams());
+
+            // The next stream must be refused.
+            final int nextStreamId = Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS * 2 + 1;
+            Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    handler.connection().remote().createStream(nextStreamId, true);
+                }
+            });
+            assertEquals(Http2Error.REFUSED_STREAM, e.error());
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    public void customMaxConcurrentStreamsShouldBeEnforcedOnRemoteEndpoint() throws Exception {
+        final int maxConcurrentStreams = 150;
+
+        final Http2ConnectionHandler handler = new Http2ConnectionHandlerBuilder()
+                .frameListener(new Http2FrameAdapter())
+                .initialSettings(new Http2Settings().maxConcurrentStreams(maxConcurrentStreams))
+                .build();
+
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            assertFalse(channel.writeInbound(Http2CodecUtil.connectionPrefaceBuf()));
+
+            ByteBuf clientSettings = clientSettingsWithoutMaxConcurrentStreams();
+            assertFalse(channel.writeInbound(clientSettings));
+
+            Http2Connection connection = handler.connection();
+
+            assertEquals(maxConcurrentStreams, connection.remote().maxActiveStreams());
+
+            // Create exactly the configured limit of client-initiated streams.
+            for (int id = 1; id < maxConcurrentStreams * 2; id += 2) {
+                connection.remote().createStream(id, true);
+            }
+            assertEquals(maxConcurrentStreams, connection.numActiveStreams());
+
+            // The next stream must be refused.
+            final int nextStreamId = maxConcurrentStreams * 2 + 1;
+            Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    handler.connection().remote().createStream(nextStreamId, true);
+                }
+            });
+            assertEquals(Http2Error.REFUSED_STREAM, e.error());
+        } finally {
+           channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    public void defaultSettingsShouldEnforceMaxConcurrentStreamsOnRemoteEndpointWithCodec()
+            throws Exception {
+        final DefaultHttp2Connection connection = new DefaultHttp2Connection(true);
+        DefaultHttp2FrameWriter frameWriter = new DefaultHttp2FrameWriter();
+        Http2ConnectionEncoder encoder = new DefaultHttp2ConnectionEncoder(connection, frameWriter);
+        Http2ConnectionDecoder decoder =
+                new DefaultHttp2ConnectionDecoder(connection, encoder, new DefaultHttp2FrameReader());
+
+        Http2ConnectionHandler handler = new Http2ConnectionHandlerBuilder()
+                .frameListener(new Http2FrameAdapter())
+                .codec(decoder, encoder)
+                .build();
+
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            assertFalse(channel.writeInbound(Http2CodecUtil.connectionPrefaceBuf()));
+            assertFalse(channel.writeInbound(clientSettingsWithoutMaxConcurrentStreams()));
+
+            assertEquals(Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS,
+                    connection.remote().maxActiveStreams());
+
+            for (int id = 1; id < Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS * 2; id += 2) {
+                connection.remote().createStream(id, true);
+            }
+            assertEquals(Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS, connection.numActiveStreams());
+
+            final int nextStreamId = Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS * 2 + 1;
+            Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    connection.remote().createStream(nextStreamId, true);
+                }
+            });
+            assertEquals(Http2Error.REFUSED_STREAM, e.error());
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    public void customMaxConcurrentStreamsShouldBeEnforcedOnRemoteEndpointWithCodec()
+            throws Exception {
+        final int maxConcurrentStreams = 150;
+
+        final DefaultHttp2Connection connection = new DefaultHttp2Connection(true);
+        DefaultHttp2FrameWriter frameWriter = new DefaultHttp2FrameWriter();
+        Http2ConnectionEncoder encoder = new DefaultHttp2ConnectionEncoder(connection, frameWriter);
+        Http2ConnectionDecoder decoder =
+                new DefaultHttp2ConnectionDecoder(connection, encoder, new DefaultHttp2FrameReader());
+
+        Http2ConnectionHandler handler = new Http2ConnectionHandlerBuilder()
+                .frameListener(new Http2FrameAdapter())
+                .initialSettings(new Http2Settings().maxConcurrentStreams(maxConcurrentStreams))
+                .codec(decoder, encoder)
+                .build();
+
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        try {
+            assertFalse(channel.writeInbound(Http2CodecUtil.connectionPrefaceBuf()));
+            assertFalse(channel.writeInbound(clientSettingsWithoutMaxConcurrentStreams()));
+
+            assertEquals(maxConcurrentStreams, connection.remote().maxActiveStreams());
+
+            for (int id = 1; id < maxConcurrentStreams * 2; id += 2) {
+                connection.remote().createStream(id, true);
+            }
+            assertEquals(maxConcurrentStreams, connection.numActiveStreams());
+
+            final int nextStreamId = maxConcurrentStreams * 2 + 1;
+            Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    connection.remote().createStream(nextStreamId, true);
+                }
+            });
+            assertEquals(Http2Error.REFUSED_STREAM, e.error());
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Nonnull
+    private static ByteBuf clientSettingsWithoutMaxConcurrentStreams() {
+        ByteBuf clientSettings = Unpooled.buffer();
+        clientSettings.writeMedium(6);       // Payload length: one 6-byte setting
+        clientSettings.writeByte(0x4);       // Frame type: SETTINGS
+        clientSettings.writeByte(0x0);       // Flags
+        clientSettings.writeInt(0x0);        // Stream 0
+        clientSettings.writeShort(0x4);      // SETTINGS_INITIAL_WINDOW_SIZE
+        clientSettings.writeInt(65535);
+        return clientSettings;
     }
 
     private static void incrementAndGetStreamShouldSucceed(Endpoint<?> endpoint) throws Http2Exception {
@@ -619,8 +897,69 @@ public class DefaultHttp2ConnectionTest {
         endpoint.createStream(streamC.id() + 2, true);
     }
 
+    @Test
+    public void connectionKeyShouldRejectUseWithOtherConnection() throws Http2Exception {
+        final Http2Connection.PropertyKey key = client.newKey();
+        final Http2Stream stream = server.local().createStream(2, false);
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                stream.setProperty(key, "foo");
+            }
+        });
+    }
+
+    @Test
+    public void connectionKeyShouldWorkAcrossStreamsOfSameConnection() throws Http2Exception {
+        Http2Connection.PropertyKey key = client.newKey();
+        Http2Stream streamA = client.local().createStream(3, false);
+        Http2Stream streamB = client.local().createStream(5, false);
+        assertNull(streamA.setProperty(key, "a"));
+        assertNull(streamB.setProperty(key, "b"));
+        assertEquals("a", streamA.getProperty(key));
+        assertEquals("b", streamB.getProperty(key));
+        assertEquals("a", streamA.removeProperty(key));
+        assertNull(streamA.getProperty(key));
+        assertEquals("b", streamB.getProperty(key));
+    }
+
+    @Test
+    public void globalKeyShouldWorkWithAnyConnection() throws Http2Exception {
+        Http2Connection.PropertyKey key = Http2ConnectionPropertyKeys.newGlobalKey();
+        Http2Stream clientStream = client.local().createStream(3, false);
+        Http2Stream serverStream = server.local().createStream(2, false);
+        assertNull(clientStream.setProperty(key, "client"));
+        assertNull(serverStream.setProperty(key, "server"));
+        assertEquals("client", clientStream.getProperty(key));
+        assertEquals("server", serverStream.getProperty(key));
+        assertEquals("client", clientStream.removeProperty(key));
+        assertNull(clientStream.getProperty(key));
+        assertEquals("server", serverStream.getProperty(key));
+    }
+
+    @Test
+    public void globalKeysShouldBeIndependent() throws Http2Exception {
+        Http2Connection.PropertyKey keyA = Http2ConnectionPropertyKeys.newGlobalKey();
+        Http2Connection.PropertyKey keyB = Http2ConnectionPropertyKeys.newGlobalKey();
+        Http2Stream stream = client.local().createStream(3, false);
+        stream.setProperty(keyA, "a");
+        stream.setProperty(keyB, "b");
+        assertEquals("a", stream.getProperty(keyA));
+        assertEquals("b", stream.getProperty(keyB));
+    }
+
+    @Test
+    public void unsetPropertyShouldReturnNullForBothKeyKinds() throws Http2Exception {
+        Http2Connection.PropertyKey connectionKey = client.newKey();
+        Http2Connection.PropertyKey globalKey = Http2ConnectionPropertyKeys.newGlobalKey();
+        Http2Stream stream = client.local().createStream(3, false);
+        assertNull(stream.getProperty(connectionKey));
+        assertNull(stream.getProperty(globalKey));
+        assertNull(stream.removeProperty(connectionKey));
+        assertNull(stream.removeProperty(globalKey));
+    }
+
     private static final class ListenerExceptionThrower implements Answer<Void> {
-        private static final RuntimeException FAKE_EXCEPTION = new RuntimeException("Fake Exception");
         private final boolean[] array;
         private final int index;
 
@@ -632,7 +971,7 @@ public class DefaultHttp2ConnectionTest {
         @Override
         public Void answer(InvocationOnMock invocation) throws Throwable {
             array[index] = true;
-            throw FAKE_EXCEPTION;
+            throw Http2TestUtil.FAKE_EXCEPTION;
         }
     }
 

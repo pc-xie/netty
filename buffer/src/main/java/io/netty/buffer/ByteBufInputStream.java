@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -14,6 +14,9 @@
  * under the License.
  */
 package io.netty.buffer;
+
+import static io.netty.util.internal.MathUtil.isOutOfBounds;
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 
 import io.netty.util.ReferenceCounted;
 import io.netty.util.internal.ObjectUtil;
@@ -108,7 +111,7 @@ public class ByteBufInputStream extends InputStream implements DataInput {
             if (releaseOnClose) {
                 buffer.release();
             }
-            throw new IllegalArgumentException("length: " + length);
+            checkPositiveOrZero(length, "length");
         }
         if (length > buffer.readableBytes()) {
             if (releaseOnClose) {
@@ -150,6 +153,7 @@ public class ByteBufInputStream extends InputStream implements DataInput {
         return endIndex - buffer.readerIndex();
     }
 
+    // Suppress a warning since the class is not thread-safe
     @Override
     public void mark(int readlimit) {
         buffer.markReaderIndex();
@@ -171,6 +175,13 @@ public class ByteBufInputStream extends InputStream implements DataInput {
 
     @Override
     public int read(byte[] b, int off, int len) throws IOException {
+        ObjectUtil.checkNotNull(b, "b");
+        if (isOutOfBounds(off, len, b.length)) {
+            throw new IndexOutOfBoundsException();
+        }
+        if (len == 0) {
+            return 0;
+        }
         int available = available();
         if (available == 0) {
             return -1;
@@ -181,6 +192,7 @@ public class ByteBufInputStream extends InputStream implements DataInput {
         return len;
     }
 
+    // Suppress a warning since the class is not thread-safe
     @Override
     public void reset() throws IOException {
         buffer.resetReaderIndex();
@@ -188,6 +200,9 @@ public class ByteBufInputStream extends InputStream implements DataInput {
 
     @Override
     public long skip(long n) throws IOException {
+        if (n <= 0) {
+            return 0;
+        }
         if (n > Integer.MAX_VALUE) {
             return skipBytes(Integer.MAX_VALUE);
         } else {
@@ -203,10 +218,7 @@ public class ByteBufInputStream extends InputStream implements DataInput {
 
     @Override
     public byte readByte() throws IOException {
-        int available = available();
-        if (available == 0) {
-            throw new EOFException();
-        }
+        checkAvailable(1);
         return buffer.readByte();
     }
 
@@ -309,6 +321,9 @@ public class ByteBufInputStream extends InputStream implements DataInput {
 
     @Override
     public int skipBytes(int n) throws IOException {
+        if (n <= 0) {
+            return 0;
+        }
         int nBytes = Math.min(available(), n);
         buffer.skipBytes(nBytes);
         return nBytes;

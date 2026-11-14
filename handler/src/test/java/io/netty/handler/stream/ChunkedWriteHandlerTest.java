@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,6 +18,8 @@ package io.netty.handler.stream;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
@@ -26,10 +28,14 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.CharsetUtil;
 import io.netty.util.ReferenceCountUtil;
-import org.junit.Assert;
-import org.junit.Test;
+import io.netty.util.internal.PlatformDependent;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -42,7 +48,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.util.concurrent.TimeUnit.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ChunkedWriteHandlerTest {
     private static final byte[] BYTES = new byte[1024 * 64];
@@ -55,7 +66,7 @@ public class ChunkedWriteHandlerTest {
 
         FileOutputStream out = null;
         try {
-            TMP = File.createTempFile("netty-chunk-", ".tmp");
+            TMP = PlatformDependent.createTempFile("netty-chunk-", ".tmp", null);
             TMP.deleteOnExit();
             out = new FileOutputStream(TMP);
             out.write(BYTES);
@@ -119,8 +130,8 @@ public class ChunkedWriteHandlerTest {
                     //no op
                 }
             });
-            Assert.assertTrue(in.isOpen());
-            Assert.assertEquals(expectedPosition, in.position());
+            assertTrue(in.isOpen());
+            assertEquals(expectedPosition, in.position());
         } finally {
             if (in != null) {
                 in.close();
@@ -128,17 +139,71 @@ public class ChunkedWriteHandlerTest {
         }
     }
 
-    @Test(expected = ClosedChannelException.class)
+    @Test
     public void testChunkedNioFileFailOnClosedFileChannel() throws IOException {
         final FileChannel in = new RandomAccessFile(TMP, "r").getChannel();
         in.close();
-        check(new ChunkedNioFile(in) {
+
+        assertThrows(ClosedChannelException.class, new Executable() {
             @Override
-            public void close() throws Exception {
-                //no op
+            public void execute() throws Throwable {
+                check(new ChunkedNioFile(in) {
+                    @Override
+                    public void close() throws Exception {
+                        //no op
+                    }
+                });
             }
         });
-        Assert.fail();
+    }
+
+    @ParameterizedTest(name = "nio = {0}")
+    @ValueSource(booleans = { false, true })
+    public void testChunkedFileFailsWhenFileWasTruncated(boolean nio) throws IOException {
+        File file = PlatformDependent.createTempFile("netty-chunk-truncated-", ".tmp", null);
+        file.deleteOnExit();
+        RandomAccessFile raf = new RandomAccessFile(file, "rw");
+        try {
+            raf.write(BYTES, 0, 1024);
+            ChunkedInput<ByteBuf> input = nio ? new ChunkedNioFile(raf.getChannel(), 0, 1024, 100) :
+                    new ChunkedFile(raf, 0, 1024, 100);
+            // The file is truncated after the input was created, for example by another process.
+            raf.setLength(512);
+
+            final AtomicInteger writes = new AtomicInteger();
+            EmbeddedChannel ch = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+                @Override
+                public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                    if (writes.incrementAndGet() > 100) {
+                        // Stop ChunkedWriteHandler if it keeps writing empty chunks.
+                        ReferenceCountUtil.release(msg);
+                        promise.setFailure(new IllegalStateException("too many writes"));
+                        ctx.close();
+                        return;
+                    }
+                    ctx.write(msg, promise);
+                }
+            }, new ChunkedWriteHandler());
+
+            ChannelFuture future = ch.writeAndFlush(input);
+            assertTrue(future.isDone());
+            assertInstanceOf(EOFException.class, future.cause());
+            assertEquals(5, writes.get());
+
+            int read = 0;
+            for (;;) {
+                ByteBuf buffer = ch.readOutbound();
+                if (buffer == null) {
+                    break;
+                }
+                read += buffer.readableBytes();
+                buffer.release();
+            }
+            assertEquals(500, read);
+            assertFalse(ch.finish());
+        } finally {
+            raf.close();
+        }
     }
 
     @Test
@@ -149,7 +214,7 @@ public class ChunkedWriteHandlerTest {
     }
 
     // Test case which shows that there is not a bug like stated here:
-    // http://stackoverflow.com/a/10426305
+    // https://stackoverflow.com/a/10426305
     @Test
     public void testListenerNotifiedWhenIsEnd() {
         ByteBuf buffer = Unpooled.copiedBuffer("Test", CharsetUtil.ISO_8859_1);
@@ -264,7 +329,7 @@ public class ChunkedWriteHandlerTest {
         ch.writeAndFlush(input).syncUninterruptibly();
         assertTrue(ch.finish());
 
-        assertEquals(0, ch.readOutbound());
+        assertEquals(0, (Integer) ch.readOutbound());
         assertNull(ch.readOutbound());
     }
 
@@ -337,7 +402,7 @@ public class ChunkedWriteHandlerTest {
         assertTrue(ch.finish());
 
         assertFalse(r.isSuccess());
-        assertTrue(r.cause() instanceof RuntimeException);
+        assertInstanceOf(RuntimeException.class, r.cause());
 
         // 3 out of 4 chunks were already written
         int read = 0;
@@ -495,16 +560,16 @@ public class ChunkedWriteHandlerTest {
     @Test
     public void testCloseFailedChunkedInput() {
         Exception error = new Exception("Unable to produce a chunk");
-        ThrowingChunkedInput input = new ThrowingChunkedInput(error);
+        final ThrowingChunkedInput input = new ThrowingChunkedInput(error);
+        final EmbeddedChannel ch = new EmbeddedChannel(new ChunkedWriteHandler());
 
-        EmbeddedChannel ch = new EmbeddedChannel(new ChunkedWriteHandler());
-
-        try {
-            ch.writeOutbound(input);
-            fail("Exception expected");
-        } catch (Exception e) {
-            assertEquals(error, e);
-        }
+        Exception e = assertThrows(Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                ch.writeOutbound(input);
+            }
+        });
+        assertEquals(error, e);
 
         assertTrue(input.isClosed());
         assertFalse(ch.finish());
@@ -585,6 +650,55 @@ public class ChunkedWriteHandlerTest {
     }
 
     @Test
+    public void testEndOfInputWhenChannelIsClosedwhenWrite() {
+        ChunkedInput<ByteBuf> input = new ChunkedInput<ByteBuf>() {
+
+            @Override
+            public boolean isEndOfInput() {
+                return true;
+            }
+
+            @Override
+            public void close() {
+            }
+
+            @Deprecated
+            @Override
+            public ByteBuf readChunk(ChannelHandlerContext ctx) {
+                return null;
+            }
+
+            @Override
+            public ByteBuf readChunk(ByteBufAllocator allocator) {
+                return null;
+            }
+
+            @Override
+            public long length() {
+                return -1;
+            }
+
+            @Override
+            public long progress() {
+                return 1;
+            }
+        };
+
+        EmbeddedChannel ch = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+                ReferenceCountUtil.release(msg);
+                // Calling close so we will drop all queued messages in the ChunkedWriteHandler.
+                ctx.close();
+                promise.setSuccess();
+            }
+        }, new ChunkedWriteHandler());
+
+        ch.writeAndFlush(input).syncUninterruptibly();
+        assertFalse(ch.finishAndReleaseAll());
+    }
+
+    @Test
     public void testWriteListenerInvokedAfterChannelClosedAndInputNotFullyConsumed() throws Exception {
         // use non-empty input which has endOfInput = false
         final TestChunkedInput input = new TestChunkedInput(42);
@@ -653,7 +767,7 @@ public class ChunkedWriteHandlerTest {
 
         // Should be `false` as we do not expect any messages to be written
         assertFalse(ch.finish());
-        assertTrue(r.cause() instanceof RuntimeException);
+        assertInstanceOf(RuntimeException.class, r.cause());
     }
 
     private static void checkSkipFailed(Object input1, Object input2) {
@@ -677,7 +791,7 @@ public class ChunkedWriteHandlerTest {
         ChannelFuture r2 = ch.writeAndFlush(input2).awaitUninterruptibly();
         assertTrue(ch.finish());
 
-        assertTrue(r1.cause() instanceof RuntimeException);
+        assertInstanceOf(RuntimeException.class, r1.cause());
         assertTrue(r2.isSuccess());
 
         // note, that after we've "skipped" the first write,
@@ -792,5 +906,259 @@ public class ChunkedWriteHandlerTest {
         boolean isClosed() {
             return closed;
         }
+    }
+
+    @Test
+    public void testResumeTransferReenteredFromReadChunkMustNotBeLostWhenSuspending() {
+        final ChunkedWriteHandler streamer = new ChunkedWriteHandler();
+        final EmbeddedChannel ch = new EmbeddedChannel(streamer);
+        SuspendResumeChunkedInput input = new SuspendResumeChunkedInput(streamer);
+        ChannelFuture future = ch.write(input);
+        ch.flush();
+
+        // The input suspends (first readChunk(...) returns null) after its implementation has
+        // already produced data and synchronously called resumeTransfer() from within
+        // readChunk(...). A plain re-entrancy guard would drop that nested call and leave the
+        // transfer suspended forever; the guard must re-run the drain loop instead.
+        ByteBuf chunk = ch.readOutbound();
+        assertNull(ch.readOutbound());
+        assertFalse(ch.finishAndReleaseAll());
+
+        assertEquals(42, chunk.readInt());
+        chunk.release();
+        assertEquals(2, input.readChunkCalls());
+        assertTrue(input.isClosed());
+        assertTrue(future.isSuccess());
+    }
+
+    private static final class SuspendResumeChunkedInput implements ChunkedInput<ByteBuf> {
+        private final ChunkedWriteHandler streamer;
+        private final AtomicInteger readChunkCalls = new AtomicInteger();
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        SuspendResumeChunkedInput(ChunkedWriteHandler streamer) {
+            this.streamer = streamer;
+        }
+
+        int readChunkCalls() {
+            return readChunkCalls.get();
+        }
+
+        boolean isClosed() {
+            return closed.get();
+        }
+
+        @Override
+        public boolean isEndOfInput() {
+            return readChunkCalls.get() >= 2;
+        }
+
+        @Override
+        public void close() {
+            closed.set(true);
+        }
+
+        @Override
+        public ByteBuf readChunk(ChannelHandlerContext ctx) throws Exception {
+            return readChunk(ctx.alloc());
+        }
+
+        @Override
+        public ByteBuf readChunk(ByteBufAllocator allocator) throws Exception {
+            if (readChunkCalls.incrementAndGet() == 1) {
+                // Data becomes available "now", so the producer resumes synchronously, but this
+                // call still reports "no chunk yet": doFlush(...) is about to suspend when the
+                // nested resumeTransfer() arrives, and that call must not be dropped.
+                streamer.resumeTransfer();
+                return null;
+            }
+            ByteBuf buffer = allocator.buffer(4);
+            buffer.writeInt(42);
+            return buffer;
+        }
+
+        @Override
+        public long length() {
+            return -1;
+        }
+
+        @Override
+        public long progress() {
+            return 0;
+        }
+    }
+
+    @Test
+    public void testFlushReenteredFromReadChunkMustNotConsumeQueueEntryTwice() {
+        final EmbeddedChannel ch = new EmbeddedChannel(new ChunkedWriteHandler());
+        ReentrantFlushChunkedInput input = new ReentrantFlushChunkedInput(ch);
+        ChannelFuture future = ch.write(input);
+        ch.flush();
+
+        ByteBuf first = ch.readOutbound();
+        ByteBuf second = ch.readOutbound();
+        assertNull(ch.readOutbound());
+        // Before the re-entrancy guard, the nested flush() consumed the queue entry and both
+        // invocations read from the same input; the outer doFlush(...) then failed with
+        // NoSuchElementException from ArrayDeque.remove() on the already-empty queue.
+        // Both chunks were read above, so no message must be left in the buffers.
+        assertFalse(ch.finishAndReleaseAll());
+
+        assertEquals(1, first.readInt());
+        first.release();
+        assertEquals(2, second.readInt());
+        second.release();
+        // The input must have been read exactly twice, and closed exactly once, after the last
+        // read: before the guard, close() happened from the nested invocation while the outer
+        // readChunk(...) call had not even returned yet.
+        assertEquals(2, input.readChunkCalls());
+        assertTrue(input.isClosed());
+        assertEquals(2, input.readChunkCallsAtClose());
+        assertTrue(future.isSuccess());
+    }
+
+    private static final class ReentrantFlushChunkedInput implements ChunkedInput<ByteBuf> {
+        private final Channel channel;
+        private final AtomicInteger readChunkCalls = new AtomicInteger();
+        private final AtomicInteger readChunkCallsAtClose = new AtomicInteger(-1);
+        private final AtomicBoolean closed = new AtomicBoolean();
+        private int chunkNo;
+
+        ReentrantFlushChunkedInput(Channel channel) {
+            this.channel = channel;
+        }
+
+        int readChunkCalls() {
+            return readChunkCalls.get();
+        }
+
+        int readChunkCallsAtClose() {
+            return readChunkCallsAtClose.get();
+        }
+
+        boolean isClosed() {
+            return closed.get();
+        }
+
+        @Override
+        public boolean isEndOfInput() {
+            return chunkNo >= 2;
+        }
+
+        @Override
+        public void close() {
+            closed.set(true);
+            readChunkCallsAtClose.set(readChunkCalls.get());
+        }
+
+        @Override
+        public ByteBuf readChunk(ChannelHandlerContext ctx) throws Exception {
+            return readChunk(ctx.alloc());
+        }
+
+        @Override
+        public ByteBuf readChunk(ByteBufAllocator allocator) throws Exception {
+            int call = readChunkCalls.incrementAndGet();
+            if (call == 1) {
+                // Runs between queue.peek() and queue.remove() in doFlush(...). Re-enter the
+                // handler synchronously, like incidental pipeline activity triggered from user
+                // code (a flush, a writability change, a close notification) would.
+                channel.flush();
+            }
+            chunkNo++;
+            ByteBuf buffer = allocator.buffer(4);
+            buffer.writeInt(chunkNo);
+            return buffer;
+        }
+
+        @Override
+        public long length() {
+            return -1;
+        }
+
+        @Override
+        public long progress() {
+            return 0;
+        }
+    }
+
+    /**
+     * A {@link ChunkedInput} that has no data available yet (the producer has not called resumeTransfer()).
+     */
+    private static final class PendingInput implements ChunkedInput<ByteBuf> {
+        boolean closed;
+
+        @Override
+        public boolean isEndOfInput() {
+            return false;
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+
+        @Deprecated
+        @Override
+        public ByteBuf readChunk(ChannelHandlerContext ctx) {
+            return null;
+        }
+
+        @Override
+        public ByteBuf readChunk(ByteBufAllocator allocator) {
+            return null;
+        }
+
+        @Override
+        public long length() {
+            return -1;
+        }
+
+        @Override
+        public long progress() {
+            return 0;
+        }
+    }
+
+    @Test
+    public void testPendingWritesFailedWhenHandlerRemoved() {
+        ChunkedWriteHandler handler = new ChunkedWriteHandler();
+        EmbeddedChannel ch = new EmbeddedChannel(handler);
+        PendingInput input = new PendingInput();
+        ChannelFuture inputFuture = ch.writeAndFlush(input);
+        ByteBuf buffer = Unpooled.copiedBuffer("queued", CharsetUtil.US_ASCII);
+        ChannelFuture bufferFuture = ch.writeAndFlush(buffer);
+        assertFalse(inputFuture.isDone());
+        assertFalse(bufferFuture.isDone());
+
+        ch.pipeline().remove(handler);
+
+        assertTrue(inputFuture.isDone());
+        assertInstanceOf(ChannelException.class, inputFuture.cause());
+        assertTrue(input.closed);
+        assertTrue(bufferFuture.isDone());
+        assertInstanceOf(ChannelException.class, bufferFuture.cause());
+        assertEquals(0, buffer.refCnt());
+        assertFalse(ch.finish());
+    }
+
+    @Test
+    public void testCancelledWritesAreClosedAndReleased() {
+        ChunkedWriteHandler handler = new ChunkedWriteHandler();
+        EmbeddedChannel ch = new EmbeddedChannel(handler);
+        PendingInput input = new PendingInput();
+        ChannelPromise inputPromise = ch.newPromise();
+        ch.writeAndFlush(input, inputPromise);
+        ByteBuf buffer = Unpooled.copiedBuffer("queued", CharsetUtil.US_ASCII);
+        ChannelPromise bufferPromise = ch.newPromise();
+        ch.writeAndFlush(buffer, bufferPromise);
+
+        assertTrue(inputPromise.cancel(false));
+        assertTrue(bufferPromise.cancel(false));
+        handler.resumeTransfer();
+
+        assertTrue(input.closed);
+        assertEquals(0, buffer.refCnt());
+        assertFalse(ch.finish());
     }
 }

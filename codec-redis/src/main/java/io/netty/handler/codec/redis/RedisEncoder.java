@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -28,7 +28,7 @@ import java.util.List;
 
 /**
  * Encodes {@link RedisMessage} into bytes following
- * <a href="http://redis.io/topics/protocol">RESP (REdis Serialization Protocol)</a>.
+ * <a href="https://redis.io/topics/protocol">RESP (REdis Serialization Protocol)</a>.
  */
 @UnstableApi
 public class RedisEncoder extends MessageToMessageEncoder<RedisMessage> {
@@ -101,6 +101,12 @@ public class RedisEncoder extends MessageToMessageEncoder<RedisMessage> {
 
     private static void writeString(ByteBufAllocator allocator, RedisMessageType type, String content,
                                     List<Object> out) {
+        if (type.isInline()) {
+            // Inline, or "simple" messages do not permit CRLF bytes in their contents.
+            if (content.indexOf('\r') != -1 || content.indexOf('\n') != -1) {
+                throw new CodecException("Line breaks are not permitted in 'simple' messages");
+            }
+        }
         ByteBuf buf = allocator.ioBuffer(type.length() + ByteBufUtil.utf8MaxBytes(content) +
                                          RedisConstants.EOL_LENGTH);
         type.writeTo(buf);

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -19,11 +19,15 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.internal.SocketUtils;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.UnknownHostException;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 public class SocksCmdRequestDecoderTest {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(SocksCmdRequestDecoderTest.class);
@@ -39,7 +43,7 @@ public class SocksCmdRequestDecoderTest {
         EmbeddedChannel embedder = new EmbeddedChannel(decoder);
         SocksCommonTestUtils.writeMessageIntoEmbedder(embedder, msg);
         if (msg.addressType() == SocksAddressType.UNKNOWN) {
-            assertTrue(embedder.readInbound() instanceof UnknownSocksRequest);
+            assertInstanceOf(UnknownSocksRequest.class, embedder.readInbound());
         } else {
             msg = embedder.readInbound();
             assertSame(msg.cmdType(), cmdType);
@@ -48,6 +52,7 @@ public class SocksCmdRequestDecoderTest {
             assertEquals(msg.port(), port);
         }
         assertNull(embedder.readInbound());
+        assertFalse(embedder.finish());
     }
 
     @Test
@@ -106,6 +111,21 @@ public class SocksCmdRequestDecoderTest {
         int port = 80;
         for (SocksCmdType cmdType : SocksCmdType.values()) {
             testSocksCmdRequestDecoderWithDifferentParams(cmdType, SocksAddressType.UNKNOWN, host, port);
+        }
+    }
+
+    /**
+     * The domain length octet is unsigned; lengths in [0x80, 0xFF] sign-extend to a negative Java
+     * {@code byte}, so a decoder that reads them with {@link io.netty.buffer.ByteBuf#readByte()}
+     * fails on spec-legal domain names of 128 to 255 characters.
+     */
+    @Test
+    public void testCmdRequestDecoderLongDomain() {
+        String[] hosts = {SocksCommonTestUtils.domainOfLength(128), SocksCommonTestUtils.domainOfLength(255)};
+        for (SocksCmdType cmdType : SocksCmdType.values()) {
+            for (String host : hosts) {
+                testSocksCmdRequestDecoderWithDifferentParams(cmdType, SocksAddressType.DOMAIN, host, 80);
+            }
         }
     }
 }

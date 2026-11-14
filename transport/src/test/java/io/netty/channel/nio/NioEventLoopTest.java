@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -32,8 +32,8 @@ import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.RejectedExecutionHandlers;
 import io.netty.util.concurrent.ThreadPerTaskExecutor;
-import org.hamcrest.core.IsInstanceOf;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -50,7 +50,12 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class NioEventLoopTest extends AbstractEventLoopTest {
 
@@ -155,7 +160,8 @@ public class NioEventLoopTest extends AbstractEventLoopTest {
         }
     }
 
-    @Test(timeout = 3000)
+    @Test
+    @Timeout(value = 3000, unit = TimeUnit.MILLISECONDS)
     public void testSelectableChannel() throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup(1);
         NioEventLoop loop = (NioEventLoop) group.next();
@@ -191,10 +197,13 @@ public class NioEventLoopTest extends AbstractEventLoopTest {
         }
     }
 
+    private static final int MAX_PENDING_TASKS = 1024;
+
     @SuppressWarnings("deprecation")
     @Test
     public void testTaskRemovalOnShutdownThrowsNoUnsupportedOperationException() throws Exception {
         final AtomicReference<Throwable> error = new AtomicReference<Throwable>();
+        final AtomicBoolean loopStarted = new AtomicBoolean();
         final Runnable task = new Runnable() {
             @Override
             public void run() {
@@ -202,7 +211,7 @@ public class NioEventLoopTest extends AbstractEventLoopTest {
             }
         };
         // Just run often enough to trigger it normally.
-        for (int i = 0; i < 1000; i++) {
+        for (int i = 0; i < 250; i++) {
             NioEventLoopGroup group = new NioEventLoopGroup(1);
             final NioEventLoop loop = (NioEventLoop) group.next();
 
@@ -212,6 +221,15 @@ public class NioEventLoopTest extends AbstractEventLoopTest {
                     try {
                         for (;;) {
                             loop.execute(task);
+                            loopStarted.set(true);
+                            // Don't let the queue grow without bounds if the producer is faster than the event
+                            // loop, otherwise we may run into an OutOfMemoryError. Keep throttling while the loop
+                            // is shutting down as it still accepts tasks until it is fully shut down, and only stop
+                            // once it is shut down so the next execute(...) is rejected. Keep the queue non-empty
+                            // so we still race with the task removal on shutdown.
+                            while (loop.pendingTasks() > MAX_PENDING_TASKS && !loop.isShutdown()) {
+                                Thread.yield();
+                            }
                         }
                     } catch (Throwable cause) {
                         error.set(cause);
@@ -219,11 +237,15 @@ public class NioEventLoopTest extends AbstractEventLoopTest {
                 }
             });
             t.start();
+            do {
+                Thread.yield();
+            } while (!loopStarted.get());
             group.shutdownNow();
             t.join();
             group.terminationFuture().syncUninterruptibly();
-            assertThat(error.get(), IsInstanceOf.instanceOf(RejectedExecutionException.class));
+            assertInstanceOf(RejectedExecutionException.class, error.get());
             error.set(null);
+            loopStarted.set(false);
         }
     }
 
@@ -268,7 +290,8 @@ public class NioEventLoopTest extends AbstractEventLoopTest {
         }
     }
 
-    @Test(timeout = 3000L)
+    @Test
+    @Timeout(value = 3000, unit = TimeUnit.MILLISECONDS)
     public void testChannelsRegistered() throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup(1);
         final NioEventLoop loop = (NioEventLoop) group.next();

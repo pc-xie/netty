@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,8 +15,8 @@
  */
 package io.netty.handler.codec.socks;
 
-import org.junit.Test;
-import static org.junit.Assert.assertTrue;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 public class SocksAuthRequestTest {
     @Test
@@ -24,12 +24,12 @@ public class SocksAuthRequestTest {
         try {
             new SocksAuthRequest(null, "");
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
         try {
             new SocksAuthRequest("", null);
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
     }
 
@@ -38,12 +38,12 @@ public class SocksAuthRequestTest {
         try {
             new SocksAuthRequest("παράδειγμα.δοκιμή", "password");
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
         try {
             new SocksAuthRequest("username", "παράδειγμα.δοκιμή");
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 
@@ -61,7 +61,7 @@ public class SocksAuthRequestTest {
                     "passwordpasswordpasswordpasswordpasswordpasswordpassword",
                     "password");
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
         try {
             new SocksAuthRequest("password",
@@ -74,7 +74,7 @@ public class SocksAuthRequestTest {
                     "passwordpasswordpasswordpasswordpasswordpasswordpassword" +
                     "passwordpasswordpasswordpasswordpasswordpasswordpassword");
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 

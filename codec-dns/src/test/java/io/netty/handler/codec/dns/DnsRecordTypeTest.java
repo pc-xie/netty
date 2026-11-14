@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,7 +15,7 @@
  */
 package io.netty.handler.codec.dns;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -23,7 +23,10 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 public class DnsRecordTypeTest {
 
@@ -40,8 +43,8 @@ public class DnsRecordTypeTest {
 
     @Test
     public void testSanity() throws Exception {
-        assertEquals("More than one type has the same int value",
-                allTypes().size(), new HashSet<DnsRecordType>(allTypes()).size());
+        assertEquals(allTypes().size(), new HashSet<DnsRecordType>(allTypes()).size(),
+                "More than one type has the same int value");
     }
 
     /**
@@ -77,7 +80,42 @@ public class DnsRecordTypeTest {
             DnsRecordType found = DnsRecordType.valueOf(t.intValue());
             assertSame(t, found);
             found = DnsRecordType.valueOf(t.name());
-            assertSame(t.name(), t, found);
+            assertSame(t, found, t.name());
         }
+    }
+
+    /**
+     * Pins the code points against the IANA "Resource Record (RR) TYPEs" registry. {@link #testFind()}
+     * proves a constant is registered, but a transposed number would still round-trip through
+     * {@link DnsRecordType#valueOf(int)}, so the values themselves are asserted literally.
+     */
+    @Test
+    public void testCodePointsMatchIanaRegistry() {
+        assertEquals(43, DnsRecordType.DS.intValue());
+        assertEquals(46, DnsRecordType.RRSIG.intValue());
+        assertEquals(47, DnsRecordType.NSEC.intValue());
+        assertEquals(48, DnsRecordType.DNSKEY.intValue());
+        assertEquals(50, DnsRecordType.NSEC3.intValue());
+        assertEquals(51, DnsRecordType.NSEC3PARAM.intValue());
+        assertEquals(52, DnsRecordType.TLSA.intValue());
+        assertEquals(53, DnsRecordType.SMIMEA.intValue());
+        assertEquals(59, DnsRecordType.CDS.intValue());
+        assertEquals(60, DnsRecordType.CDNSKEY.intValue());
+        assertEquals(61, DnsRecordType.OPENPGPKEY.intValue());
+        assertEquals(62, DnsRecordType.CSYNC.intValue());
+        assertEquals(63, DnsRecordType.ZONEMD.intValue());
+    }
+
+    /**
+     * An unregistered code point must still decode, as an unregistered instance rather than by throwing.
+     * See {@link DnsRecordType#valueOf(int)}.
+     */
+    @Test
+    public void testUnregisteredCodePointDecodesAsUnknown() {
+        // 0xff00 is in the private-use range of the registry, so IANA will never assign it and this
+        // test cannot start failing when the registry grows.
+        DnsRecordType unassigned = DnsRecordType.valueOf(0xff00);
+        assertEquals(0xff00, unassigned.intValue());
+        assertEquals("UNKNOWN", unassigned.name());
     }
 }

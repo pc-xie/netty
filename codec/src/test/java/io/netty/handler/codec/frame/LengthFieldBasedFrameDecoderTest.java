@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -22,24 +22,28 @@ import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.TooLongFrameException;
 import io.netty.util.CharsetUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class LengthFieldBasedFrameDecoderTest {
     @Test
     public void testFailSlowTooLongFrameRecovery() throws Exception {
-        EmbeddedChannel ch = new EmbeddedChannel(
+        final EmbeddedChannel ch = new EmbeddedChannel(
                 new LengthFieldBasedFrameDecoder(5, 0, 4, 0, 4, false));
 
         for (int i = 0; i < 2; i ++) {
             assertFalse(ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0, 0, 2 })));
-            try {
-                assertTrue(ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0 })));
-                fail(DecoderException.class.getSimpleName() + " must be raised.");
-            } catch (TooLongFrameException e) {
-                // Expected
-            }
+            assertThrows(TooLongFrameException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    assertTrue(ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0 })));
+                }
+            });
 
             ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0, 0, 1, 'A' }));
             ByteBuf buf = ch.readInbound();
@@ -50,16 +54,16 @@ public class LengthFieldBasedFrameDecoderTest {
 
     @Test
     public void testFailFastTooLongFrameRecovery() throws Exception {
-        EmbeddedChannel ch = new EmbeddedChannel(
+        final EmbeddedChannel ch = new EmbeddedChannel(
                 new LengthFieldBasedFrameDecoder(5, 0, 4, 0, 4));
 
         for (int i = 0; i < 2; i ++) {
-            try {
-                assertTrue(ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0, 0, 2 })));
-                fail(DecoderException.class.getSimpleName() + " must be raised.");
-            } catch (TooLongFrameException e) {
-                // Expected
-            }
+            assertThrows(TooLongFrameException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    assertTrue(ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0, 0, 2 })));
+                }
+            });
 
             ch.writeInbound(Unpooled.wrappedBuffer(new byte[] { 0, 0, 0, 0, 0, 1, 'A' }));
             ByteBuf buf = ch.readInbound();

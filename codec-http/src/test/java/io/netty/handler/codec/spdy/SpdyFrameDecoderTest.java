@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,121 +17,39 @@ package io.netty.handler.codec.spdy;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import java.util.ArrayDeque;
-import java.util.Queue;
+
 import java.util.Random;
 
 import static io.netty.handler.codec.spdy.SpdyCodecUtil.SPDY_HEADER_SIZE;
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static io.netty.handler.codec.spdy.SpdyFrameDecoder.DEFAULT_MAX_NUM_SETTINGS;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 public class SpdyFrameDecoderTest {
 
     private static final Random RANDOM = new Random();
 
-    private final SpdyFrameDecoderDelegate delegate = mock(SpdyFrameDecoderDelegate.class);
-    private final TestSpdyFrameDecoderDelegate testDelegate = new TestSpdyFrameDecoderDelegate();
+    private final SpdyFrameDecoderExtendedDelegate delegate = mock(SpdyFrameDecoderExtendedDelegate.class);
+    private final TestSpdyFrameDecoderDelegate testDelegate = new TestSpdyFrameDecoderDelegate(delegate);
     private SpdyFrameDecoder decoder;
 
-    @Before
+    @BeforeEach
     public void createDecoder() {
         decoder = new SpdyFrameDecoder(SpdyVersion.SPDY_3_1, testDelegate);
     }
 
-    @After
+    @AfterEach
     public void releaseBuffers() {
         testDelegate.releaseAll();
-    }
-
-    private final class TestSpdyFrameDecoderDelegate implements SpdyFrameDecoderDelegate {
-        private final Queue<ByteBuf> buffers = new ArrayDeque<ByteBuf>();
-
-        @Override
-        public void readDataFrame(int streamId, boolean last, ByteBuf data) {
-            delegate.readDataFrame(streamId, last, data);
-            buffers.add(data);
-        }
-
-        @Override
-        public void readSynStreamFrame(int streamId, int associatedToStreamId,
-        byte priority, boolean last, boolean unidirectional) {
-            delegate.readSynStreamFrame(streamId, associatedToStreamId, priority, last, unidirectional);
-        }
-
-        @Override
-        public void readSynReplyFrame(int streamId, boolean last) {
-            delegate.readSynReplyFrame(streamId, last);
-        }
-
-        @Override
-        public void readRstStreamFrame(int streamId, int statusCode) {
-            delegate.readRstStreamFrame(streamId, statusCode);
-        }
-
-        @Override
-        public void readSettingsFrame(boolean clearPersisted) {
-            delegate.readSettingsFrame(clearPersisted);
-        }
-
-        @Override
-        public void readSetting(int id, int value, boolean persistValue, boolean persisted) {
-            delegate.readSetting(id, value, persistValue, persisted);
-        }
-
-        @Override
-        public void readSettingsEnd() {
-            delegate.readSettingsEnd();
-        }
-
-        @Override
-        public void readPingFrame(int id) {
-            delegate.readPingFrame(id);
-        }
-
-        @Override
-        public void readGoAwayFrame(int lastGoodStreamId, int statusCode) {
-            delegate.readGoAwayFrame(lastGoodStreamId, statusCode);
-        }
-
-        @Override
-        public void readHeadersFrame(int streamId, boolean last) {
-            delegate.readHeadersFrame(streamId, last);
-        }
-
-        @Override
-        public void readWindowUpdateFrame(int streamId, int deltaWindowSize) {
-            delegate.readWindowUpdateFrame(streamId, deltaWindowSize);
-        }
-
-        @Override
-        public void readHeaderBlock(ByteBuf headerBlock) {
-            delegate.readHeaderBlock(headerBlock);
-            buffers.add(headerBlock);
-        }
-
-        @Override
-        public void readHeaderBlockEnd() {
-            delegate.readHeaderBlockEnd();
-        }
-
-        @Override
-        public void readFrameError(String message) {
-            delegate.readFrameError(message);
-        }
-
-        void releaseAll() {
-            for (;;) {
-                ByteBuf buf = buffers.poll();
-                if (buf == null) {
-                    return;
-                }
-                buf.release();
-            }
-        }
     }
 
     private static void encodeDataFrameHeader(ByteBuf buffer, int streamId, byte flags, int length) {
@@ -140,8 +58,8 @@ public class SpdyFrameDecoderTest {
         buffer.writeMedium(length);
     }
 
-    private static void encodeControlFrameHeader(ByteBuf buffer, short type, byte flags, int length) {
-        buffer.writeShort(0x8000 | SpdyVersion.SPDY_3_1.getVersion());
+    static void encodeControlFrameHeader(ByteBuf buffer, short type, byte flags, int length) {
+        buffer.writeShort(0x8000 | SpdyVersion.SPDY_3_1.version());
         buffer.writeShort(type);
         buffer.writeByte(flags);
         buffer.writeMedium(length);
@@ -914,6 +832,31 @@ public class SpdyFrameDecoderTest {
     }
 
     @Test
+    public void testSpdySettingsFrameContainTooManySettings() throws Exception {
+        short type = 4;
+        byte flags = 0;
+        int numSettings = DEFAULT_MAX_NUM_SETTINGS * 2;
+        int length = 8 * numSettings + 4;
+        byte idFlags = 0;
+        int id = RANDOM.nextInt() & 0x00FFFFFF;
+        int value = RANDOM.nextInt();
+
+        ByteBuf buf = Unpooled.buffer(SPDY_HEADER_SIZE + length);
+        encodeControlFrameHeader(buf, type, flags, length);
+        buf.writeInt(numSettings);
+        for (int i = 0; i < numSettings; i++) {
+            buf.writeByte(idFlags);
+            buf.writeMedium(id);
+            buf.writeInt(value);
+        }
+
+        decoder.decode(buf);
+        verify(delegate).readFrameError(anyString());
+        assertFalse(buf.isReadable());
+        buf.release();
+    }
+
+    @Test
     public void testDiscardUnknownFrame() throws Exception {
         short type = 5;
         byte flags = (byte) 0xFF;
@@ -924,7 +867,7 @@ public class SpdyFrameDecoderTest {
         buf.writeLong(RANDOM.nextLong());
 
         decoder.decode(buf);
-        verifyZeroInteractions(delegate);
+        verifyNoInteractions(delegate);
         assertFalse(buf.isReadable());
         buf.release();
     }
@@ -939,7 +882,7 @@ public class SpdyFrameDecoderTest {
         encodeControlFrameHeader(buf, type, flags, length);
 
         decoder.decode(buf);
-        verifyZeroInteractions(delegate);
+        verifyNoInteractions(delegate);
         assertFalse(buf.isReadable());
         buf.release();
     }
@@ -961,7 +904,7 @@ public class SpdyFrameDecoderTest {
         decoder.decode(header);
         decoder.decode(segment1);
         decoder.decode(segment2);
-        verifyZeroInteractions(delegate);
+        verifyNoInteractions(delegate);
         assertFalse(header.isReadable());
         assertFalse(segment1.isReadable());
         assertFalse(segment2.isReadable());

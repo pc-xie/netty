@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -38,15 +38,12 @@ public final class ByteEchoServer {
     static final int PORT = Integer.parseInt(System.getProperty("port", "8007"));
 
     public static void main(String[] args) throws Exception {
-        final ThreadFactory acceptFactory = new DefaultThreadFactory("accept");
-        final ThreadFactory connectFactory = new DefaultThreadFactory("connect");
-        final NioEventLoopGroup acceptGroup = new NioEventLoopGroup(1, acceptFactory, NioUdtProvider.BYTE_PROVIDER);
-        final NioEventLoopGroup connectGroup = new NioEventLoopGroup(1, connectFactory, NioUdtProvider.BYTE_PROVIDER);
-
+        final ThreadFactory factory = new DefaultThreadFactory("udt");
+        final NioEventLoopGroup group = new NioEventLoopGroup(1, factory, NioUdtProvider.BYTE_PROVIDER);
         // Configure the server.
         try {
             final ServerBootstrap boot = new ServerBootstrap();
-            boot.group(acceptGroup, connectGroup)
+            boot.group(group)
                     .channelFactory(NioUdtProvider.BYTE_ACCEPTOR)
                     .option(ChannelOption.SO_BACKLOG, 10)
                     .handler(new LoggingHandler(LogLevel.INFO))
@@ -65,8 +62,7 @@ public final class ByteEchoServer {
             future.channel().closeFuture().sync();
         } finally {
             // Shut down all event loops to terminate all threads.
-            acceptGroup.shutdownGracefully();
-            connectGroup.shutdownGracefully();
+            group.shutdownGracefully();
         }
     }
 }

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -21,21 +21,23 @@ import io.netty.buffer.ByteBuf;
 import io.netty.util.CharsetUtil;
 import io.netty.util.internal.ObjectUtil;
 
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Locale;
+
 
 /**
  * The version of HTTP or its derived protocols, such as
- * <a href="http://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
- * <a href="http://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>.
+ * <a href="https://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
+ * <a href="https://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>.
  */
 public class HttpVersion implements Comparable<HttpVersion> {
 
     private static final Pattern VERSION_PATTERN =
         Pattern.compile("(\\S+)/(\\d+)\\.(\\d+)");
-
-    private static final String HTTP_1_0_STRING = "HTTP/1.0";
-    private static final String HTTP_1_1_STRING = "HTTP/1.1";
+    static final String HTTP_1_0_STRING = "HTTP/1.0";
+    static final String HTTP_1_1_STRING = "HTTP/1.1";
+    private static final int MAX_INT_DIV_10 = Integer.MAX_VALUE / 10;
+    private static final int MAX_INT_MOD_10 = Integer.MAX_VALUE % 10;
 
     /**
      * HTTP/1.0
@@ -56,9 +58,19 @@ public class HttpVersion implements Comparable<HttpVersion> {
      * returned.
      */
     public static HttpVersion valueOf(String text) {
+        return valueOf(text, false);
+    }
+
+    static HttpVersion valueOf(String text, boolean strict) {
         ObjectUtil.checkNotNull(text, "text");
 
-        text = text.trim();
+        // super fast-path
+        if (text == HTTP_1_1_STRING) {
+            return HTTP_1_1;
+        }
+        if (text == HTTP_1_0_STRING) {
+            return HTTP_1_0;
+        }
 
         if (text.isEmpty()) {
             throw new IllegalArgumentException("text is empty (possibly HTTP/0.9)");
@@ -69,12 +81,12 @@ public class HttpVersion implements Comparable<HttpVersion> {
         // expected to be case-sensitive
         //
         // See:
-        // * http://trac.tools.ietf.org/wg/httpbis/trac/ticket/1
-        // * http://trac.tools.ietf.org/wg/httpbis/trac/wiki
+        // * https://trac.tools.ietf.org/wg/httpbis/trac/ticket/1
+        // * https://trac.tools.ietf.org/wg/httpbis/trac/wiki
         //
         HttpVersion version = version0(text);
         if (version == null) {
-            version = new HttpVersion(text, true);
+            version = new HttpVersion(text, strict, true);
         }
         return version;
     }
@@ -100,40 +112,94 @@ public class HttpVersion implements Comparable<HttpVersion> {
      * Creates a new HTTP version with the specified version string.  You will
      * not need to create a new instance unless you are implementing a protocol
      * derived from HTTP, such as
-     * <a href="http://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
-     * <a href="http://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>.
+     * <a href="https://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
+     * <a href="https://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>.
      *
      * @param keepAliveDefault
      *        {@code true} if and only if the connection is kept alive unless
      *        the {@code "Connection"} header is set to {@code "close"} explicitly.
      */
     public HttpVersion(String text, boolean keepAliveDefault) {
+        this(text, false, keepAliveDefault);
+    }
+
+    HttpVersion(String text, boolean strict, boolean keepAliveDefault) {
+        // toUpperCase() without an explicit Locale uses the JVM default. In Turkish locale
+        // (tr_TR) 'i' uppercases to 'İ' (U+0130), which would corrupt protocol strings such
+        // as "icap/1.0" or any custom HTTP-derived scheme that contains a lowercase 'i'.
+        // Control characters or whitespace at the token boundary must fail the checks below.
         ObjectUtil.checkNotNull(text, "text");
-
-        text = text.trim().toUpperCase();
         if (text.isEmpty()) {
-            throw new IllegalArgumentException("empty text");
+            throw new IllegalArgumentException("text must not be empty");
+        }
+        text = text.toUpperCase(Locale.US);
+
+        if (strict) {
+            // Only single digit major / minor version is allowed.
+            // See
+            //  - https://datatracker.ietf.org/doc/html/rfc7230#section-2.6
+            //  - https://datatracker.ietf.org/doc/html/rfc9110#name-protocol-version
+            if (text.length() != 8 || !text.startsWith("HTTP/") || text.charAt(6) != '.') {
+                throw new IllegalArgumentException("invalid version format: " + text);
+            }
+            protocolName = "HTTP";
+            majorVersion = toDecimal(text.charAt(5));
+            minorVersion = toDecimal(text.charAt(7));
+        } else {
+            int slashIndex = text.indexOf('/');
+            int dotIndex = text.indexOf('.', slashIndex + 1);
+
+            if (slashIndex <= 0 || dotIndex <= slashIndex + 1
+                    || dotIndex >= text.length() - 1 || hasControlOrWhitespace(text, slashIndex)) {
+                throw new IllegalArgumentException("invalid version format: " + text);
+            }
+
+            protocolName = text.substring(0, slashIndex);
+            majorVersion = parseInt(text, slashIndex + 1, dotIndex);
+            minorVersion = parseInt(text, dotIndex + 1, text.length());
         }
 
-        Matcher m = VERSION_PATTERN.matcher(text);
-        if (!m.matches()) {
-            throw new IllegalArgumentException("invalid version format: " + text);
-        }
-
-        protocolName = m.group(1);
-        majorVersion = Integer.parseInt(m.group(2));
-        minorVersion = Integer.parseInt(m.group(3));
         this.text = protocolName + '/' + majorVersion + '.' + minorVersion;
         this.keepAliveDefault = keepAliveDefault;
         bytes = null;
+    }
+
+    private static boolean hasControlOrWhitespace(String s, int end) {
+        for (int i = 0; i < end; i++) {
+            char c = s.charAt(i);
+            if (Character.isISOControl(c) || Character.isWhitespace(c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int parseInt(String text, int start, int end) {
+        int result = 0;
+        for (int i = start; i < end; i++) {
+            int digit = toDecimal(text.charAt(i));
+            if (result > MAX_INT_DIV_10 || result == MAX_INT_DIV_10 && digit > MAX_INT_MOD_10) {
+                throw new IllegalArgumentException("Invalid version number, too large: " + text);
+            }
+            result = result * 10 + digit;
+        }
+        return result;
+    }
+
+    private static int toDecimal(final int value) {
+        if (value < '0' || value > '9') {
+            throw new IllegalArgumentException("Invalid version number, only 0-9 (0x30-0x39) allowed," +
+                    " but received a '" + (char) value + "' (0x" + Integer.toHexString(value) + ")");
+        }
+        return value - '0';
     }
 
     /**
      * Creates a new HTTP version with the specified protocol name and version
      * numbers.  You will not need to create a new instance unless you are
      * implementing a protocol derived from HTTP, such as
-     * <a href="http://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
-     * <a href="http://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>
+     * <a href="https://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
+     * <a href="https://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>
      *
      * @param keepAliveDefault
      *        {@code true} if and only if the connection is kept alive unless
@@ -148,18 +214,16 @@ public class HttpVersion implements Comparable<HttpVersion> {
     private HttpVersion(
             String protocolName, int majorVersion, int minorVersion,
             boolean keepAliveDefault, boolean bytes) {
+        // See the comment in the (text, strict, keepAliveDefault) constructor for why this needs
+        // an explicit Locale.US: avoids the Turkish-locale 'i' -> 'İ' corruption.
         ObjectUtil.checkNotNull(protocolName, "protocolName");
-
-        protocolName = protocolName.trim().toUpperCase();
         if (protocolName.isEmpty()) {
-            throw new IllegalArgumentException("empty protocolName");
+            throw new IllegalArgumentException("protocolName must not be empty");
         }
+        protocolName = protocolName.toUpperCase(Locale.US);
 
-        for (int i = 0; i < protocolName.length(); i ++) {
-            if (Character.isISOControl(protocolName.charAt(i)) ||
-                    Character.isWhitespace(protocolName.charAt(i))) {
-                throw new IllegalArgumentException("invalid character in protocolName");
-            }
+        if (hasControlOrWhitespace(protocolName, protocolName.length())) {
+            throw new IllegalArgumentException("invalid character in protocolName");
         }
 
         checkPositiveOrZero(majorVersion, "majorVersion");

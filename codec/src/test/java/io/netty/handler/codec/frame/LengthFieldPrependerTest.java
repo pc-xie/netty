@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -20,19 +20,23 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.EncoderException;
 import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.util.CharsetUtil;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static io.netty.buffer.Unpooled.*;
 import java.nio.ByteOrder;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class LengthFieldPrependerTest {
 
     private ByteBuf msg;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         msg = copiedBuffer("A", CharsetUtil.ISO_8859_1);
     }
@@ -82,12 +86,12 @@ public class LengthFieldPrependerTest {
     @Test
     public void testAdjustedLengthLessThanZero() throws Exception {
         final EmbeddedChannel ch = new EmbeddedChannel(new LengthFieldPrepender(4, -2));
-        try {
-            ch.writeOutbound(msg);
-            fail(EncoderException.class.getSimpleName() + " must be raised.");
-        } catch (EncoderException e) {
-            // Expected
-        }
+        assertThrows(EncoderException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                ch.writeOutbound(msg);
+            }
+        });
     }
 
     @Test
@@ -107,7 +111,7 @@ public class LengthFieldPrependerTest {
         buf = ch.readOutbound();
         assertSame(buf, msg);
         buf.release();
-        assertFalse("The channel must have been completely read", ch.finish());
+        assertFalse(ch.finish(), "The channel must have been completely read");
     }
 
 }

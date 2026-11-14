@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -16,13 +16,18 @@ package io.netty.handler.codec.http2;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpStatusClass;
+import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http2.Http2Connection.Endpoint;
-import io.netty.util.internal.UnstableApi;
+import io.netty.handler.codec.http2.Http2Headers.PseudoHeaderName;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map.Entry;
 
 import static io.netty.handler.codec.http.HttpStatusClass.INFORMATIONAL;
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_PRIORITY_WEIGHT;
@@ -47,7 +52,6 @@ import static java.lang.Math.min;
  * This interface enforces inbound flow control functionality through
  * {@link Http2LocalFlowController}
  */
-@UnstableApi
 public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(DefaultHttp2ConnectionDecoder.class);
     private Http2FrameListener internalFrameListener = new PrefaceFrameListener();
@@ -59,6 +63,9 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
     private final Http2PromisedRequestVerifier requestVerifier;
     private final Http2SettingsReceivedConsumer settingsReceivedConsumer;
     private final boolean autoAckPing;
+    private final Http2Connection.PropertyKey contentLengthKey;
+    private final boolean validateHeaders;
+    private final boolean validateRequiredPseudoHeaders;
 
     public DefaultHttp2ConnectionDecoder(Http2Connection connection,
                                          Http2ConnectionEncoder encoder,
@@ -93,6 +100,16 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         this(connection, encoder, frameReader, requestVerifier, autoAckSettings, true);
     }
 
+    @Deprecated
+    public DefaultHttp2ConnectionDecoder(Http2Connection connection,
+                                         Http2ConnectionEncoder encoder,
+                                         Http2FrameReader frameReader,
+                                         Http2PromisedRequestVerifier requestVerifier,
+                                         boolean autoAckSettings,
+                                         boolean autoAckPing) {
+        this(connection, encoder, frameReader, requestVerifier, autoAckSettings, autoAckPing, true);
+    }
+
     /**
      * Create a new instance.
      * @param connection The {@link Http2Connection} associated with this decoder.
@@ -113,7 +130,43 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                                          Http2FrameReader frameReader,
                                          Http2PromisedRequestVerifier requestVerifier,
                                          boolean autoAckSettings,
-                                         boolean autoAckPing) {
+                                         boolean autoAckPing,
+                                         boolean validateHeaders) {
+        this(connection, encoder, frameReader, requestVerifier, autoAckSettings, autoAckPing, validateHeaders, false);
+    }
+
+    /**
+     * Create a new instance.
+     * @param connection The {@link Http2Connection} associated with this decoder.
+     * @param encoder The {@link Http2ConnectionEncoder} associated with this decoder.
+     * @param frameReader Responsible for reading/parsing the raw frames. As opposed to this object which applies
+     *                    h2 semantics on top of the frames.
+     * @param requestVerifier Determines if push promised streams are valid.
+     * @param autoAckSettings {@code false} to disable automatically applying and sending settings acknowledge frame.
+     *                        The {@code Http2ConnectionEncoder} is expected to be an instance of
+     *                        {@link Http2SettingsReceivedConsumer} and will apply the earliest received but not yet
+     *                        ACKed SETTINGS when writing the SETTINGS ACKs. {@code true} to enable automatically
+     *                        applying and sending settings acknowledge frame.
+     * @param autoAckPing {@code false} to disable automatically sending ping acknowledge frame. {@code true} to enable
+     *                    automatically sending ping ack frame.
+     * @param validateHeaders {@code true} to validate headers according to
+     *                        <a href="https://tools.ietf.org/html/rfc7540#section-8.1.2.6">RFC 7540, 8.1.2.6</a>.
+     * @param validateRequiredPseudoHeaders {@code true} to reject request/response HEADERS that omit a mandatory
+     *        pseudo-header field, according to
+     *        <a href="https://www.rfc-editor.org/rfc/rfc9113.html#section-8.3">RFC 9113, 8.3</a>, and to reject
+     *        PUSH_PROMISE field blocks that do not carry a complete set of request pseudo-header fields, according
+     *        to <a href="https://www.rfc-editor.org/rfc/rfc9113.html#section-8.4.1">RFC 9113, 8.4.1</a>.
+     */
+    public DefaultHttp2ConnectionDecoder(Http2Connection connection,
+                                         Http2ConnectionEncoder encoder,
+                                         Http2FrameReader frameReader,
+                                         Http2PromisedRequestVerifier requestVerifier,
+                                         boolean autoAckSettings,
+                                         boolean autoAckPing,
+                                         boolean validateHeaders,
+                                         boolean validateRequiredPseudoHeaders) {
+        this.validateHeaders = validateHeaders;
+        this.validateRequiredPseudoHeaders = validateRequiredPseudoHeaders;
         this.autoAckPing = autoAckPing;
         if (autoAckSettings) {
             settingsReceivedConsumer = null;
@@ -125,6 +178,7 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
             settingsReceivedConsumer = (Http2SettingsReceivedConsumer) encoder;
         }
         this.connection = checkNotNull(connection, "connection");
+        contentLengthKey = this.connection.newKey();
         this.frameReader = checkNotNull(frameReader, "frameReader");
         this.encoder = checkNotNull(encoder, "encoder");
         this.requestVerifier = checkNotNull(requestVerifier, "requestVerifier");
@@ -157,11 +211,6 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
     @Override
     public Http2FrameListener frameListener() {
         return listener;
-    }
-
-    // Visible for testing
-    Http2FrameListener internalFrameListener() {
-        return internalFrameListener;
     }
 
     @Override
@@ -218,9 +267,98 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         connection.goAwayReceived(lastStreamId, errorCode, debugData);
     }
 
-    void onUnknownFrame0(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
-            ByteBuf payload) throws Http2Exception {
-        listener.onUnknownFrame(ctx, frameType, streamId, flags, payload);
+    // See https://tools.ietf.org/html/rfc7540#section-8.1.2.6
+    private void verifyContentLength(Http2Stream stream, int data, boolean isEnd) throws Http2Exception {
+        ContentLength contentLength = stream.getProperty(contentLengthKey);
+        if (contentLength != null) {
+            try {
+                contentLength.increaseReceivedBytes(connection.isServer(), stream.id(), data, isEnd);
+            } finally {
+                if (isEnd) {
+                    stream.removeProperty(contentLengthKey);
+                }
+            }
+        }
+    }
+
+    /**
+     * Validates that an initial request or response HEADERS frame, or a PUSH_PROMISE field block (which always
+     * carries a request header set, per <a href="https://www.rfc-editor.org/rfc/rfc9113.html#section-8.4.1">
+     * RFC 9113, 8.4.1</a>), carries the mandatory pseudo-header fields, as required by
+     * <a href="https://www.rfc-editor.org/rfc/rfc9113.html#section-8.3">RFC 9113, 8.3</a>.
+     * Trailers and informational (1xx) responses are handled by the caller and do not reach this method.
+     */
+    private static void validateRequiredPseudoHeaders(boolean server, int streamId, Http2Headers headers)
+            throws Http2Exception {
+        if (server) {
+            // Request pseudo-header fields (RFC 9113, 8.3.1).
+            CharSequence method = headers.method();
+            if (method == null) {
+                throw streamError(streamId, PROTOCOL_ERROR,
+                        "Request is missing mandatory :method pseudo-header field.");
+            }
+            // CONNECT (RFC 9113, 8.5) omits :scheme/:path and carries :authority; extended CONNECT (RFC 8441),
+            // identified by :protocol, follows the regular :scheme/:path rules.
+            if (HttpMethod.CONNECT.asciiName().contentEquals(method) &&
+                    !headers.contains(PseudoHeaderName.PROTOCOL.value())) {
+                if (headers.authority() == null) {
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                            "CONNECT request is missing mandatory :authority pseudo-header field.");
+                }
+            } else {
+                if (headers.scheme() == null) {
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                            "Request is missing mandatory :scheme pseudo-header field.");
+                }
+                CharSequence path = headers.path();
+                if (path == null || path.length() == 0) {
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                            "Request is missing mandatory :path pseudo-header field.");
+                }
+            }
+        } else {
+            // Response pseudo-header fields (RFC 9113, 8.3.2).
+            if (headers.status() == null) {
+                throw streamError(streamId, PROTOCOL_ERROR,
+                        "Response is missing mandatory :status pseudo-header field.");
+            }
+        }
+    }
+
+    /**
+     * Validates that pseudo-headers are defined and are used in the correct
+     * endpoint direction (RFC 9113, Sections 8.1.1 and 8.3).
+     *
+     * @param isServer true if processing an inbound request on the server
+     * @param streamId the target HTTP/2 stream ID
+     * @param headers  the HTTP/2 headers container
+     * @throws Http2Exception if a pseudo-header is undefined or used in the
+     *                        wrong endpoint direction
+     */
+    private static void validatePseudoHeadersDirection(boolean isServer, int streamId, Http2Headers headers)
+            throws Http2Exception {
+        for (Entry<CharSequence, CharSequence> entry : headers) {
+            CharSequence name = entry.getKey();
+            if (PseudoHeaderName.hasPseudoHeaderFormat(name)) {
+                PseudoHeaderName pseudo = PseudoHeaderName.getPseudoHeader(name);
+                if (pseudo == null) {
+                    // Undefined pseudo header
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                                      "Undefined pseudo-header '%s' received.", name);
+                }
+                if (isServer && !pseudo.isRequestOnly()) {
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                                      "Response-only pseudo-header '%s' received in request.", name);
+                }
+                if (!isServer && pseudo.isRequestOnly()) {
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                                      "Request-only pseudo-header '%s' received in response.", name);
+                }
+            } else {
+                //Pseudo-headers MUST precede regular headers, so we can stop checking
+                break;
+            }
+        }
     }
 
     /**
@@ -232,11 +370,12 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                               boolean endOfStream) throws Http2Exception {
             Http2Stream stream = connection.stream(streamId);
             Http2LocalFlowController flowController = flowController();
-            int bytesToReturn = data.readableBytes() + padding;
+            int readable = data.readableBytes();
+            int bytesToReturn = readable + padding;
 
             final boolean shouldIgnore;
             try {
-                shouldIgnore = shouldIgnoreHeadersOrDataFrame(ctx, streamId, stream, "DATA");
+                shouldIgnore = shouldIgnoreHeadersOrDataFrame(ctx, streamId, stream, endOfStream, "DATA");
             } catch (Http2Exception e) {
                 // Ignoring this frame. We still need to count the frame towards the connection flow control
                 // window, but we immediately mark all bytes as consumed.
@@ -254,12 +393,11 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                 flowController.consumeBytes(stream, bytesToReturn);
 
                 // Verify that the stream may have existed after we apply flow control.
-                verifyStreamMayHaveExisted(streamId);
+                verifyStreamMayHaveExisted(streamId, endOfStream, "DATA");
 
                 // All bytes have been consumed.
                 return bytesToReturn;
             }
-
             Http2Exception error = null;
             switch (stream.state()) {
                 case OPEN:
@@ -271,7 +409,9 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                         stream.id(), stream.state());
                     break;
                 default:
-                    error = streamError(stream.id(), PROTOCOL_ERROR,
+                    // IDLE, RESERVED_LOCAL or RESERVED_REMOTE: this must be treated as a connection error
+                    // (RFC 9113, section 5.1).
+                    error = connectionError(PROTOCOL_ERROR,
                         "Stream %d in unexpected state: %s", stream.id(), stream.state());
                     break;
             }
@@ -287,9 +427,16 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                     throw error;
                 }
 
+                verifyContentLength(stream, readable, endOfStream);
+
                 // Call back the application and retrieve the number of bytes that have been
                 // immediately processed.
                 bytesToReturn = listener.onDataRead(ctx, streamId, data, padding, endOfStream);
+
+                if (endOfStream) {
+                    lifecycleManager.closeStreamRemote(stream, ctx.newSucceededFuture());
+                }
+
                 return bytesToReturn;
             } catch (Http2Exception e) {
                 // If an exception happened during delivery, the listener may have returned part
@@ -308,10 +455,6 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
             } finally {
                 // If appropriate, return the processed bytes to the flow controller.
                 flowController.consumeBytes(stream, bytesToReturn);
-
-                if (endOfStream) {
-                    lifecycleManager.closeStreamRemote(stream, ctx.newSucceededFuture());
-                }
             }
         }
 
@@ -326,13 +469,16 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                 short weight, boolean exclusive, int padding, boolean endOfStream) throws Http2Exception {
             Http2Stream stream = connection.stream(streamId);
             boolean allowHalfClosedRemote = false;
+            boolean isTrailers = false;
             if (stream == null && !connection.streamMayHaveExisted(streamId)) {
                 stream = connection.remote().createStream(streamId, endOfStream);
                 // Allow the state to be HALF_CLOSE_REMOTE if we're creating it in that state.
                 allowHalfClosedRemote = stream.state() == HALF_CLOSED_REMOTE;
+            } else if (stream != null) {
+                isTrailers = stream.isHeadersReceived();
             }
 
-            if (shouldIgnoreHeadersOrDataFrame(ctx, streamId, stream, "HEADERS")) {
+            if (shouldIgnoreHeadersOrDataFrame(ctx, streamId, stream, endOfStream, "HEADERS")) {
                 return;
             }
 
@@ -367,11 +513,50 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                             stream.state());
             }
 
+            if (!isTrailers) {
+                if (validateRequiredPseudoHeaders && !isInformational) {
+                    // Reject initial request/response HEADERS that omit a mandatory pseudo-header (RFC 9113, 8.3).
+                    validateRequiredPseudoHeaders(connection.isServer(), stream.id(), headers);
+                }
+                if (validateHeaders) {
+                    //Enforce RFC 9113 section 8.3: Reject wrong direction pseudo-headers
+                    //https://github.com/netty/netty/issues/17449
+                    validatePseudoHeadersDirection(connection.isServer(), streamId, headers);
+                }
+                // extract the content-length header
+                List<? extends CharSequence> contentLength = headers.getAll(HttpHeaderNames.CONTENT_LENGTH);
+                if (contentLength != null && !contentLength.isEmpty()) {
+                    try {
+                        long cLength = HttpUtil.normalizeAndGetContentLength(contentLength, false, true);
+                        if (cLength != -1) {
+                            headers.setLong(HttpHeaderNames.CONTENT_LENGTH, cLength);
+                            stream.setProperty(contentLengthKey, new ContentLength(cLength));
+                        }
+                    } catch (IllegalArgumentException e) {
+                        throw streamError(stream.id(), PROTOCOL_ERROR, e,
+                                "Multiple content-length headers received");
+                    }
+                }
+                // Use size() instead of isEmpty() for backward compatibility with grpc-java prior to 1.59.1,
+                // see https://github.com/grpc/grpc-java/issues/10665
+            } else if (validateHeaders && headers.size() > 0) {
+                // Need to check trailers don't contain pseudo headers. According to RFC 9113
+                // Trailers MUST NOT include pseudo-header fields (Section 8.3).
+                for (Iterator<Entry<CharSequence, CharSequence>> iterator =
+                    headers.iterator(); iterator.hasNext();) {
+                    CharSequence name = iterator.next().getKey();
+                    if (Http2Headers.PseudoHeaderName.hasPseudoHeaderFormat(name)) {
+                        throw streamError(stream.id(), PROTOCOL_ERROR,
+                                "Found invalid Pseudo-Header in trailers: %s", name);
+                    }
+                }
+            }
+
             stream.headersReceived(isInformational);
+            verifyContentLength(stream, 0, endOfStream);
             encoder.flowController().updateDependencyTree(streamId, streamDependency, weight, exclusive);
-
-            listener.onHeadersRead(ctx, streamId, headers, streamDependency, weight, exclusive, padding, endOfStream);
-
+            listener.onHeadersRead(ctx, streamId, headers, streamDependency,
+                    weight, exclusive, padding, endOfStream);
             // If the headers completes this stream, close it.
             if (endOfStream) {
                 lifecycleManager.closeStreamRemote(stream, ctx.newSucceededFuture());
@@ -390,7 +575,7 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         public void onRstStreamRead(ChannelHandlerContext ctx, int streamId, long errorCode) throws Http2Exception {
             Http2Stream stream = connection.stream(streamId);
             if (stream == null) {
-                verifyStreamMayHaveExisted(streamId);
+                verifyStreamMayHaveExisted(streamId, false, "RST_STREAM");
                 return;
             }
 
@@ -503,12 +688,8 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
 
             Http2Stream parentStream = connection.stream(streamId);
 
-            if (shouldIgnoreHeadersOrDataFrame(ctx, streamId, parentStream, "PUSH_PROMISE")) {
+            if (shouldIgnoreHeadersOrDataFrame(ctx, streamId, parentStream, false, "PUSH_PROMISE")) {
                 return;
-            }
-
-            if (parentStream == null) {
-                throw connectionError(PROTOCOL_ERROR, "Stream %d does not exist", streamId);
             }
 
             switch (parentStream.state()) {
@@ -521,6 +702,36 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                   throw connectionError(PROTOCOL_ERROR,
                       "Stream %d in unexpected state for receiving push promise: %s",
                       parentStream.id(), parentStream.state());
+            }
+
+            // Reserve the push stream, with a priority based on the current stream's priority, before running
+            // the request verifier below. This ensures the promised stream's existence is tracked even if the
+            // request is subsequently rejected, so the stream ID cannot be silently reused or forgotten.
+            connection.remote().reservePushStream(promisedStreamId, parentStream);
+
+            if (validateRequiredPseudoHeaders) {
+                // A PUSH_PROMISE field block carries a complete set of request header fields, regardless of the
+                // role of the local endpoint. Reject an incomplete promised request on the promised stream
+                // (RFC 9113, 8.4.1).
+                validateRequiredPseudoHeaders(true, promisedStreamId, headers);
+            }
+
+            // extract the content-length header
+            List<? extends CharSequence> contentLength = headers.getAll(HttpHeaderNames.CONTENT_LENGTH);
+            if (contentLength != null && !contentLength.isEmpty()) {
+                long cLength;
+                try {
+                    cLength = HttpUtil.normalizeAndGetContentLength(contentLength, false, true);
+                } catch (IllegalArgumentException e) {
+                    throw streamError(promisedStreamId, PROTOCOL_ERROR, e,
+                        "Promised request on stream %d for promised stream %d contains invalid content-length header",
+                        streamId, promisedStreamId);
+                }
+                if (cLength != -1 && cLength != 0) {
+                    throw streamError(promisedStreamId, PROTOCOL_ERROR,
+                        "Promised request on stream %d for promised stream %d contains invalid content-length header",
+                        streamId, promisedStreamId);
+                }
             }
 
             if (!requestVerifier.isAuthoritative(ctx, headers)) {
@@ -539,9 +750,6 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                         streamId, promisedStreamId);
             }
 
-            // Reserve the push stream based with a priority based on the current stream's priority.
-            connection.remote().reservePushStream(promisedStreamId, parentStream);
-
             listener.onPushPromiseRead(ctx, streamId, promisedStreamId, headers, padding);
         }
 
@@ -557,7 +765,7 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
             Http2Stream stream = connection.stream(streamId);
             if (stream == null || stream.state() == CLOSED || streamCreatedAfterGoAwaySent(streamId)) {
                 // Ignore this frame.
-                verifyStreamMayHaveExisted(streamId);
+                verifyStreamMayHaveExisted(streamId, false, "WINDOW_UPDATE");
                 return;
             }
 
@@ -570,7 +778,12 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         @Override
         public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
                 ByteBuf payload) throws Http2Exception {
-            onUnknownFrame0(ctx, frameType, streamId, flags, payload);
+            Http2Stream stream = connection.stream(streamId);
+            if (stream == null) {
+                return;
+            }
+
+            listener.onUnknownFrame(ctx, frameType, streamId, flags, payload);
         }
 
         /**
@@ -578,7 +791,7 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
          * {@code stream} (which may be {@code null}) associated with {@code streamId}.
          */
         private boolean shouldIgnoreHeadersOrDataFrame(ChannelHandlerContext ctx, int streamId, Http2Stream stream,
-                String frameName) throws Http2Exception {
+                boolean endOfStream, String frameName) throws Http2Exception {
             if (stream == null) {
                 if (streamCreatedAfterGoAwaySent(streamId)) {
                     logger.info("{} ignoring {} frame for stream {}. Stream sent after GOAWAY sent",
@@ -588,14 +801,15 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
 
                 // Make sure it's not an out-of-order frame, like a rogue DATA frame, for a stream that could
                 // never have existed.
-                verifyStreamMayHaveExisted(streamId);
+                verifyStreamMayHaveExisted(streamId, endOfStream, frameName);
 
                 // Its possible that this frame would result in stream ID out of order creation (PROTOCOL ERROR) and its
                 // also possible that this frame is received on a CLOSED stream (STREAM_CLOSED after a RST_STREAM is
                 // sent). We don't have enough information to know for sure, so we choose the lesser of the two errors.
                 throw streamError(streamId, STREAM_CLOSED, "Received %s frame for an unknown stream %d",
                                   frameName, streamId);
-            } else if (stream.isResetSent() || streamCreatedAfterGoAwaySent(streamId)) {
+            }
+            if (stream.isResetSent() || streamCreatedAfterGoAwaySent(streamId)) {
                 // If we have sent a reset stream it is assumed the stream will be closed after the write completes.
                 // If we have not sent a reset, but the stream was created after a GoAway this is not supported by
                 // DefaultHttp2Connection and if a custom Http2Connection is used it is assumed the lifetime is managed
@@ -604,8 +818,8 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                 if (logger.isInfoEnabled()) {
                     logger.info("{} ignoring {} frame for stream {}", ctx.channel(), frameName,
                             stream.isResetSent() ? "RST_STREAM sent." :
-                                ("Stream created after GOAWAY sent. Last known stream by peer " +
-                                 connection.remote().lastStreamKnownByPeer()));
+                                    "Stream created after GOAWAY sent. Last known stream by peer " +
+                                     connection.remote().lastStreamKnownByPeer());
                 }
 
                 return true;
@@ -631,9 +845,12 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                     streamId > remote.lastStreamKnownByPeer();
         }
 
-        private void verifyStreamMayHaveExisted(int streamId) throws Http2Exception {
+        private void verifyStreamMayHaveExisted(int streamId, boolean endOfStream, String frameName)
+                throws Http2Exception {
             if (!connection.streamMayHaveExisted(streamId)) {
-                throw connectionError(PROTOCOL_ERROR, "Stream %d does not exist", streamId);
+                throw connectionError(PROTOCOL_ERROR,
+                        "Stream %d does not exist for inbound frame %s, endOfStream = %b",
+                        streamId, frameName, endOfStream);
             }
         }
     }
@@ -737,7 +954,44 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         @Override
         public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
                 ByteBuf payload) throws Http2Exception {
-            onUnknownFrame0(ctx, frameType, streamId, flags, payload);
+            verifyPrefaceReceived();
+            internalFrameListener.onUnknownFrame(ctx, frameType, streamId, flags, payload);
+        }
+    }
+
+    private static final class ContentLength {
+        private final long expected;
+        private long seen;
+
+        ContentLength(long expected) {
+            this.expected = expected;
+        }
+
+        void increaseReceivedBytes(boolean server, int streamId, int bytes, boolean isEnd) throws Http2Exception {
+            seen += bytes;
+            // Check for overflow
+            if (seen < 0) {
+                throw streamError(streamId, PROTOCOL_ERROR,
+                        "Received amount of data did overflow and so not match content-length header %d", expected);
+            }
+            // Check if we received more data then what was advertised via the content-length header.
+            if (seen > expected) {
+                throw streamError(streamId, PROTOCOL_ERROR,
+                        "Received amount of data %d does not match content-length header %d", seen, expected);
+            }
+
+            if (isEnd) {
+                if (seen == 0 && !server) {
+                    // This may be a response to a HEAD request, let's just allow it.
+                    return;
+                }
+
+                // Check that we really saw what was told via the content-length header.
+                if (expected > seen) {
+                    throw streamError(streamId, PROTOCOL_ERROR,
+                            "Received amount of data %d does not match content-length header %d", seen, expected);
+                }
+            }
         }
     }
 }

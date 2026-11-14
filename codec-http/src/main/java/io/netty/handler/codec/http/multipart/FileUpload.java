@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -31,7 +31,10 @@ public interface FileUpload extends HttpData {
     String getFilename();
 
     /**
-     * Set the original filename
+     * Set the original filename.
+     * <p>
+     * <strong>Note:</strong> This method validates that the filename is safe for including in an HTTP request,
+     * and will throw an exception if that's not the case.
      */
     void setFilename(String filename);
 

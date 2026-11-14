@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,9 +18,10 @@ package io.netty.handler.codec.dns;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class DefaultDnsRecordDecoderTest {
 
@@ -145,13 +146,13 @@ public class DefaultDnsRecordDecoderTest {
         try {
             cnameRecord = (DefaultDnsRawRecord) decoder.decodeRecord(
                     "netty.github.io", DnsRecordType.CNAME, DnsRecord.CLASS_IN, 60, buffer, 10, 2);
-            assertEquals("The rdata of CNAME-type record should be decompressed in advance",
-                         0, ByteBufUtil.compare(buffer.duplicate().setIndex(0, 10), cnameRecord.content()));
+            assertEquals(0, ByteBufUtil.compare(buffer.duplicate().setIndex(0, 10), cnameRecord.content()),
+                "The rdata of CNAME-type record should be decompressed in advance");
             assertEquals("netty.io.", DnsCodecUtil.decodeDomainName(cnameRecord.content()));
             nsRecord = (DefaultDnsRawRecord) decoder.decodeRecord(
                     "netty.github.io", DnsRecordType.NS, DnsRecord.CLASS_IN, 60, buffer, 10, 2);
-            assertEquals("The rdata of NS-type record should be decompressed in advance",
-                         0, ByteBufUtil.compare(buffer.duplicate().setIndex(0, 10), nsRecord.content()));
+            assertEquals(0, ByteBufUtil.compare(buffer.duplicate().setIndex(0, 10), nsRecord.content()),
+                        "The rdata of NS-type record should be decompressed in advance");
             assertEquals("netty.io.", DnsCodecUtil.decodeDomainName(nsRecord.content()));
         } finally {
             buffer.release();
@@ -161,6 +162,51 @@ public class DefaultDnsRecordDecoderTest {
 
             if (nsRecord != null) {
                 nsRecord.release();
+            }
+        }
+    }
+
+    @Test
+    public void testDecodeCompressionRDataPointerMX() throws Exception {
+        DefaultDnsRecordDecoder decoder = new DefaultDnsRecordDecoder();
+        byte[] compressionPointer = {
+                5, 'n', 'e', 't', 't', 'y', 2, 'i', 'o', 0,
+                0, 10,          // preference = 10
+                (byte) 0xC0, 0  // record is a pointer to netty.io
+        };
+
+        byte[] expected = {
+                0, 10, // pref = 10
+                5, 'n', 'e', 't', 't', 'y', 2, 'i', 'o', 0
+        };
+        ByteBuf buffer = Unpooled.wrappedBuffer(compressionPointer);
+        DefaultDnsRawRecord mxRecord = null;
+        ByteBuf expectedBuf = null;
+        try {
+            mxRecord = (DefaultDnsRawRecord) decoder.decodeRecord(
+                    "mail.example.com",
+                    DnsRecordType.MX,
+                    DnsRecord.CLASS_IN,
+                    60,
+                    buffer,
+                    10,
+                    4);
+
+            expectedBuf = Unpooled.wrappedBuffer(expected);
+
+            assertEquals(0, ByteBufUtil.compare(expectedBuf, mxRecord.content()),
+                         "The rdata of MX-type record should be decompressed in advance");
+            assertEquals(10, mxRecord.content().getUnsignedShort(0));
+
+            ByteBuf exchangerName = mxRecord.content().duplicate().setIndex(2, mxRecord.content().writerIndex());
+            assertEquals("netty.io.", DnsCodecUtil.decodeDomainName(exchangerName));
+        } finally {
+            buffer.release();
+            if (expectedBuf != null) {
+                expectedBuf.release();
+            }
+            if (mxRecord != null) {
+                mxRecord.release();
             }
         }
     }

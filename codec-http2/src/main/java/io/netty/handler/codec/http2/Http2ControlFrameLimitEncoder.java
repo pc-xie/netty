@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -95,8 +95,8 @@ final class Http2ControlFrameLimitEncoder extends DecoratingHttp2ConnectionEncod
                 limitReached = true;
                 Http2Exception exception = Http2Exception.connectionError(Http2Error.ENHANCE_YOUR_CALM,
                         "Maximum number %d of outstanding control frames reached", maxOutstandingControlFrames);
-                logger.info("Maximum number {} of outstanding control frames reached. Closing channel {}",
-                        maxOutstandingControlFrames, ctx.channel(), exception);
+                logger.info("{} Maximum number {} of outstanding control frames reached, closing channel.",
+                        ctx.channel(), maxOutstandingControlFrames, exception);
 
                 // First notify the Http2LifecycleManager and then close the connection.
                 lifecycleManager.onError(ctx, true, exception);

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -25,7 +25,7 @@ import static io.netty.resolver.dns.DnsServerAddresses.sequential;
 public final class SequentialDnsServerAddressStreamProvider extends UniSequentialDnsServerAddressStreamProvider {
     /**
      * Create a new instance.
-     * @param addresses The addresses which will be be returned in sequential order via
+     * @param addresses The addresses which will be returned in sequential order via
      * {@link #nameServerAddressStream(String)}
      */
     public SequentialDnsServerAddressStreamProvider(InetSocketAddress... addresses) {
@@ -34,7 +34,7 @@ public final class SequentialDnsServerAddressStreamProvider extends UniSequentia
 
     /**
      * Create a new instance.
-     * @param addresses The addresses which will be be returned in sequential order via
+     * @param addresses The addresses which will be returned in sequential order via
      * {@link #nameServerAddressStream(String)}
      */
     public SequentialDnsServerAddressStreamProvider(Iterable<? extends InetSocketAddress> addresses) {

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -49,11 +49,18 @@ final class SignatureAlgorithmConverter {
 
     /**
      * Converts an OpenSSL algorithm name to a Java algorithm name and return it,
-     * or return {@code null} if the conversation failed because the format is not known.
+     * or return {@code null} if the conversion failed because the format is not known.
      */
     static String toJavaName(String opensslName) {
         if (opensslName == null) {
             return null;
+        }
+        // EdDSA names carry no hash, so the pattern can't match them
+        if ("ed25519".equalsIgnoreCase(opensslName)) {
+            return "Ed25519";
+        }
+        if ("ed448".equalsIgnoreCase(opensslName)) {
+            return "Ed448";
         }
         Matcher matcher = PATTERN.matcher(opensslName);
         if (matcher.matches()) {

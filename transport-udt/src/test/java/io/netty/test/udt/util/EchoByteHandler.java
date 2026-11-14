@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,7 +16,6 @@
 
 package io.netty.test.udt.util;
 
-import com.yammer.metrics.core.Meter;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
@@ -36,15 +35,13 @@ public class EchoByteHandler extends ChannelInboundHandlerAdapter {
 
     private final ByteBuf message;
 
-    private final Meter meter;
+    private volatile int counter;
 
-    public Meter meter() {
-        return meter;
+    public int counter() {
+        return counter;
     }
 
-    public EchoByteHandler(final Meter meter, final int messageSize) {
-
-        this.meter = meter;
+    public EchoByteHandler(final int messageSize) {
 
         message = Unpooled.buffer(messageSize);
 
@@ -64,9 +61,7 @@ public class EchoByteHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         ByteBuf buf = (ByteBuf) msg;
-        if (meter != null) {
-            meter.mark(buf.readableBytes());
-        }
+        counter += buf.readableBytes();
         ctx.writeAndFlush(msg);
     }
 

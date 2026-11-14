@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -23,14 +23,14 @@ import io.netty.channel.EventLoop;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
 import io.netty.util.concurrent.Future;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * This is a test case for the deadlock scenario described in https://github.com/netty/netty/issues/8238.
@@ -44,16 +44,21 @@ public class FixedChannelPoolMapDeadlockTest {
 
         final EventLoop threadA1 = new DefaultEventLoop();
         final Bootstrap bootstrapA1 = new Bootstrap()
-                .channel(LocalChannel.class).group(threadA1).localAddress(new LocalAddress("A1"));
+                .channel(LocalChannel.class).group(threadA1).localAddress(
+                    new LocalAddress(FixedChannelPoolMapDeadlockTest.class));
         final EventLoop threadA2 = new DefaultEventLoop();
         final Bootstrap bootstrapA2 = new Bootstrap()
-                .channel(LocalChannel.class).group(threadA2).localAddress(new LocalAddress("A2"));
+                .channel(LocalChannel.class).group(threadA2).localAddress(
+                    new LocalAddress(FixedChannelPoolMapDeadlockTest.class));
         final EventLoop threadB1 = new DefaultEventLoop();
         final Bootstrap bootstrapB1 = new Bootstrap()
-                .channel(LocalChannel.class).group(threadB1).localAddress(new LocalAddress("B1"));
+                .channel(LocalChannel.class).group(threadB1).localAddress(
+                    new LocalAddress(FixedChannelPoolMapDeadlockTest.class));
+
         final EventLoop threadB2 = new DefaultEventLoop();
         final Bootstrap bootstrapB2 = new Bootstrap()
-                .channel(LocalChannel.class).group(threadB2).localAddress(new LocalAddress("B2"));
+                .channel(LocalChannel.class).group(threadB2).localAddress(
+                    new LocalAddress(FixedChannelPoolMapDeadlockTest.class));
 
         final FixedChannelPool poolA1 = new FixedChannelPool(bootstrapA1, NOOP_HANDLER, 1);
         final FixedChannelPool poolA2 = new FixedChannelPool(bootstrapB2, NOOP_HANDLER, 1);
@@ -61,7 +66,7 @@ public class FixedChannelPoolMapDeadlockTest {
         final FixedChannelPool poolB2 = new FixedChannelPool(bootstrapA2, NOOP_HANDLER, 1);
 
         // Synchronize threads on these barriers to ensure order of execution, first wait until each thread is inside
-        // the newPool callbak, then hold the two threads that should lose the match until the first two returns, then
+        // the newPool callback, then hold the two threads that should lose the match until the first two returns, then
         // release them to test if they deadlock when trying to release their pools on each other's threads.
         final CyclicBarrier arrivalBarrier = new CyclicBarrier(4);
         final CyclicBarrier releaseBarrier = new CyclicBarrier(3);
@@ -178,10 +183,12 @@ public class FixedChannelPoolMapDeadlockTest {
 
         final EventLoop thread1 = new DefaultEventLoop();
         final Bootstrap bootstrap1 = new Bootstrap()
-                .channel(LocalChannel.class).group(thread1).localAddress(new LocalAddress("#1"));
+                .channel(LocalChannel.class).group(thread1).localAddress(
+                    new LocalAddress(FixedChannelPoolMapDeadlockTest.class));
         final EventLoop thread2 = new DefaultEventLoop();
         final Bootstrap bootstrap2 = new Bootstrap()
-                .channel(LocalChannel.class).group(thread2).localAddress(new LocalAddress("#2"));
+                .channel(LocalChannel.class).group(thread2).localAddress(
+                    new LocalAddress(FixedChannelPoolMapDeadlockTest.class));
 
         // pool1 runs on thread2, pool2 runs on thread1
         final FixedChannelPool pool1 = new FixedChannelPool(bootstrap2, NOOP_HANDLER, 1);
@@ -260,5 +267,5 @@ public class FixedChannelPoolMapDeadlockTest {
         public void channelCreated(Channel ch) throws Exception {
             // noop
         }
-    };
+    }
 }

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,12 +18,23 @@ package io.netty.handler.codec.http.websocketx;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.flow.FlowControlHandler;
-import org.junit.Test;
+import io.netty.util.ReferenceCountUtil;
+import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import static io.netty.util.CharsetUtil.UTF_8;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests common, abstract class functionality in {@link WebSocketClientProtocolHandler}.
@@ -136,6 +147,58 @@ public class WebSocketProtocolHandlerTest {
         assertPropagatedInbound(textFrame, channel);
 
         textFrame.release();
+        assertFalse(channel.finish());
+    }
+
+    @Test
+    public void testTimeout() throws Exception {
+        final AtomicReference<ChannelPromise> ref = new AtomicReference<ChannelPromise>();
+        WebSocketProtocolHandler handler = new WebSocketProtocolHandler(
+                false, WebSocketCloseStatus.NORMAL_CLOSURE, 1) { };
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                ref.set(promise);
+                ReferenceCountUtil.release(msg);
+            }
+        }, handler);
+
+        ChannelHandlerContext ctx = channel.pipeline().context(WebSocketProtocolHandler.class);
+        ChannelFuture future = channel.writeAndFlush(new CloseWebSocketFrame());
+        handler.close(ctx, ctx.newPromise());
+
+        do {
+            Thread.sleep(10);
+            channel.runPendingTasks();
+        } while (!future.isDone());
+
+        assertInstanceOf(WebSocketHandshakeException.class, future.cause());
+        assertFalse(ref.get().isDone());
+        assertFalse(channel.finish());
+    }
+
+    @Test
+    public void testTimeoutWithoutExplicitClose() throws Exception {
+        // A bare write(CloseWebSocketFrame) is not followed by any close() call: the force-close
+        // timeout itself must be the thing that closes the channel once it fires.
+        WebSocketProtocolHandler handler = new WebSocketProtocolHandler(
+                false, WebSocketCloseStatus.NORMAL_CLOSURE, 1) { };
+        EmbeddedChannel channel = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                // Simulate a stalled write: never complete the promise.
+                ReferenceCountUtil.release(msg);
+            }
+        }, handler);
+
+        channel.writeAndFlush(new CloseWebSocketFrame());
+
+        while (channel.isOpen()) {
+            Thread.sleep(10);
+            channel.runPendingTasks();
+        }
+
+        assertFalse(channel.isOpen());
         assertFalse(channel.finish());
     }
 

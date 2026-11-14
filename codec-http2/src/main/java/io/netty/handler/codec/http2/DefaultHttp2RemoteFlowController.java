@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -15,7 +15,6 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -23,13 +22,17 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_WINDOW_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_INITIAL_WINDOW_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_WEIGHT;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_WEIGHT;
 import static io.netty.handler.codec.http2.Http2Error.FLOW_CONTROL_ERROR;
 import static io.netty.handler.codec.http2.Http2Error.INTERNAL_ERROR;
 import static io.netty.handler.codec.http2.Http2Error.STREAM_CLOSED;
+import static io.netty.handler.codec.http2.Http2Exception.connectionError;
 import static io.netty.handler.codec.http2.Http2Exception.streamError;
 import static io.netty.handler.codec.http2.Http2Stream.State.HALF_CLOSED_LOCAL;
+import static io.netty.handler.codec.http2.Http2Stream.State.RESERVED_LOCAL;
+import static io.netty.handler.codec.http2.Http2Stream.State.RESERVED_REMOTE;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 import static java.lang.Math.max;
@@ -41,7 +44,6 @@ import static java.lang.Math.min;
  * This class is <strong>NOT</strong> thread safe. The assumption is all methods must be invoked from a single thread.
  * Typically this thread is the event loop thread for the {@link ChannelHandlerContext} managed by this class.
  */
-@UnstableApi
 public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowController {
     private static final InternalLogger logger =
             InternalLoggerFactory.getInstance(DefaultHttp2RemoteFlowController.class);
@@ -94,8 +96,22 @@ public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowControll
             @Override
             public void onStreamActive(Http2Stream stream) {
                 // If the object was previously created, but later activated then we have to ensure the proper
-                // initialWindowSize is used.
-                monitor.windowSize(state(stream), initialWindowSize);
+                // initialWindowSize is used. The peer might also have already granted credit for a reserved stream
+                // via WINDOW_UPDATE (RFC 9113, section 5.1), so add the initialWindowSize to it instead of replacing
+                // it. The window of a stream that was not reserved before is always 0 here. A WINDOW_UPDATE that would
+                // make the sum exceed MAX_INITIAL_WINDOW_SIZE is rejected (see FlowState.incrementStreamWindow), but a
+                // SETTINGS_INITIAL_WINDOW_SIZE increase after such credit was granted can still do so. Unlike for
+                // active streams this is not detected when the SETTINGS are applied, as only active streams are
+                // visited there, and we can't signal an error from here. It needs a misbehaving peer, so clamp the
+                // window and log it.
+                FlowState state = state(stream);
+                long window = (long) initialWindowSize + state.windowSize();
+                if (window > MAX_INITIAL_WINDOW_SIZE) {
+                    logger.warn("{} Window of stream {} would be {} when it becomes active, clamping it to {}",
+                            ctx != null ? ctx.channel() : null, stream.id(), window, MAX_INITIAL_WINDOW_SIZE);
+                    window = MAX_INITIAL_WINDOW_SIZE;
+                }
+                monitor.windowSize(state, (int) window);
             }
 
             @Override
@@ -108,7 +124,7 @@ public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowControll
             @Override
             public void onStreamHalfClosed(Http2Stream stream) {
                 if (HALF_CLOSED_LOCAL == stream.state()) {
-                    /**
+                    /*
                      * When this method is called there should not be any
                      * pending frames left if the API is used correctly. However,
                      * it is possible that a erroneous application can sneak
@@ -292,6 +308,14 @@ public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowControll
         }
 
         /**
+         * Determine if the stream associated with this object is reserved, so it is not active yet.
+         */
+        boolean isReserved() {
+            Http2Stream.State state = stream.state();
+            return state == RESERVED_LOCAL || state == RESERVED_REMOTE;
+        }
+
+        /**
          * Determine if the stream associated with this object is writable.
          * @return {@code true} if the stream associated with this object is writable.
          */
@@ -407,6 +431,12 @@ public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowControll
             if (delta > 0 && Integer.MAX_VALUE - delta < window) {
                 throw streamError(stream.id(), FLOW_CONTROL_ERROR,
                         "Window size overflow for stream: %d", stream.id());
+            }
+            if (delta > 0 && isReserved() && (long) window + delta + initialWindowSize > MAX_INITIAL_WINDOW_SIZE) {
+                // The initialWindowSize is added to the window of a reserved stream when it becomes active, and the
+                // window must not exceed 2^31-1 then either (RFC 9113, section 6.9.1).
+                throw streamError(stream.id(), FLOW_CONTROL_ERROR,
+                        "Window size overflow for reserved stream: %d", stream.id());
             }
             window += delta;
 
@@ -643,7 +673,14 @@ public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowControll
             connection.forEachActiveStream(new Http2StreamVisitor() {
                 @Override
                 public boolean visit(Http2Stream stream) throws Http2Exception {
-                    state(stream).incrementStreamWindow(delta);
+                    try {
+                        state(stream).incrementStreamWindow(delta);
+                    } catch (Http2Exception e) {
+                        // RFC 9113 Section 6.9.2 requires a connection error if a SETTINGS change causes overflow.
+                        throw connectionError(FLOW_CONTROL_ERROR, e,
+                                "Window size overflow for stream: %d after SETTINGS_INITIAL_WINDOW_SIZE change",
+                                stream.id());
+                    }
                     return true;
                 }
             });
@@ -746,7 +783,8 @@ public class DefaultHttp2RemoteFlowController implements Http2RemoteFlowControll
             try {
                 listener.writabilityChanged(state.stream);
             } catch (Throwable cause) {
-                logger.error("Caught Throwable from listener.writabilityChanged", cause);
+                logger.error("{} Caught Throwable from listener.writabilityChanged for {}",
+                        ctx.channel(), state.stream, cause);
             }
         }
 

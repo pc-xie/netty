@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -28,8 +28,8 @@ import static java.lang.Integer.parseInt;
 
 /**
  * The response code and its description of HTTP or its derived protocols, such as
- * <a href="http://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
- * <a href="http://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>.
+ * <a href="https://en.wikipedia.org/wiki/Real_Time_Streaming_Protocol">RTSP</a> and
+ * <a href="https://en.wikipedia.org/wiki/Internet_Content_Adaptation_Protocol">ICAP</a>.
  */
 public class HttpResponseStatus implements Comparable<HttpResponseStatus> {
 
@@ -47,6 +47,11 @@ public class HttpResponseStatus implements Comparable<HttpResponseStatus> {
      * 102 Processing (WebDAV, RFC2518)
      */
     public static final HttpResponseStatus PROCESSING = newStatus(102, "Processing");
+
+    /**
+     * 103 Early Hints (RFC 8297)
+     */
+    public static final HttpResponseStatus EARLY_HINTS = newStatus(103, "Early Hints");
 
     /**
      * 200 OK
@@ -344,6 +349,8 @@ public class HttpResponseStatus implements Comparable<HttpResponseStatus> {
             return SWITCHING_PROTOCOLS;
         case 102:
             return PROCESSING;
+        case 103:
+            return EARLY_HINTS;
         case 200:
             return OK;
         case 201:
@@ -520,7 +527,7 @@ public class HttpResponseStatus implements Comparable<HttpResponseStatus> {
 
     private final int code;
     private final AsciiString codeAsText;
-    private HttpStatusClass codeClass;
+    private final HttpStatusClass codeClass;
 
     private final String reasonPhrase;
     private final byte[] bytes;
@@ -546,15 +553,18 @@ public class HttpResponseStatus implements Comparable<HttpResponseStatus> {
         for (int i = 0; i < reasonPhrase.length(); i ++) {
             char c = reasonPhrase.charAt(i);
             // Check prohibited characters.
-            switch (c) {
-                case '\n': case '\r':
-                    throw new IllegalArgumentException(
-                            "reasonPhrase contains one of the following prohibited characters: " +
-                                    "\\r\\n: " + reasonPhrase);
+            // RFC 9110 defines the reason-phrase as *( HTAB / SP / VCHAR / obs-text ).
+            // All other control characters and DEL are rejected as lenient parsers may
+            // treat them as line separators (response splitting / desync) and C-string
+            // based parsers will truncate at NUL.
+            if ((c <= 0x1F && c != '\t') || c == 0x7F) {
+                throw new IllegalArgumentException(
+                        "reasonPhrase contains invalid character: " + reasonPhrase);
             }
         }
 
         this.code = code;
+        this.codeClass = HttpStatusClass.valueOf(code);
         String codeString = Integer.toString(code);
         codeAsText = new AsciiString(codeString);
         this.reasonPhrase = reasonPhrase;
@@ -590,11 +600,7 @@ public class HttpResponseStatus implements Comparable<HttpResponseStatus> {
      * Returns the class of this {@link HttpResponseStatus}
      */
     public HttpStatusClass codeClass() {
-        HttpStatusClass type = this.codeClass;
-        if (type == null) {
-            this.codeClass = type = HttpStatusClass.valueOf(code);
-        }
-        return type;
+        return this.codeClass;
     }
 
     @Override

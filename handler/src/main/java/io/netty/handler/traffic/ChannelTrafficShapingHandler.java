@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,10 +15,10 @@
  */
 package io.netty.handler.traffic;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 
+import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
 
@@ -148,12 +148,12 @@ public class ChannelTrafficShapingHandler extends AbstractTrafficShapingHandler 
                     queueSize -= size;
                     ctx.write(toSend.toSend, toSend.promise);
                 }
-            } else {
+            } else if (!messagesQueue.isEmpty()) {
+                ClosedChannelException cause = new ClosedChannelException();
                 for (ToSend toSend : messagesQueue) {
-                    if (toSend.toSend instanceof ByteBuf) {
-                        ((ByteBuf) toSend.toSend).release();
-                    }
+                    releaseAndFailQueuedWrite(toSend.toSend, toSend.promise, cause);
                 }
+                queueSize = 0;
             }
             messagesQueue.clear();
         }

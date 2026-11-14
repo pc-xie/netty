@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,19 +16,25 @@
 
 package io.netty.handler.codec.http2;
 
+import io.netty.handler.codec.http.HttpScheme;
 import io.netty.handler.codec.http2.Http2HeadersEncoder.SensitivityDetector;
-import io.netty.util.internal.UnstableApi;
 
 /**
  * Builder which builds {@link HttpToHttp2ConnectionHandler} objects.
  */
-@UnstableApi
 public final class HttpToHttp2ConnectionHandlerBuilder extends
         AbstractHttp2ConnectionHandlerBuilder<HttpToHttp2ConnectionHandler, HttpToHttp2ConnectionHandlerBuilder> {
+
+    private HttpScheme httpScheme;
 
     @Override
     public HttpToHttp2ConnectionHandlerBuilder validateHeaders(boolean validateHeaders) {
         return super.validateHeaders(validateHeaders);
+    }
+
+    @Override
+    public HttpToHttp2ConnectionHandlerBuilder validateRequiredPseudoHeaders(boolean validateRequiredPseudoHeaders) {
+        return super.validateRequiredPseudoHeaders(validateRequiredPseudoHeaders);
     }
 
     @Override
@@ -58,7 +64,7 @@ public final class HttpToHttp2ConnectionHandlerBuilder extends
 
     @Override
     public HttpToHttp2ConnectionHandlerBuilder codec(Http2ConnectionDecoder decoder,
-                                                        Http2ConnectionEncoder encoder) {
+                                                     Http2ConnectionEncoder encoder) {
         return super.codec(decoder, encoder);
     }
 
@@ -80,6 +86,30 @@ public final class HttpToHttp2ConnectionHandlerBuilder extends
     }
 
     @Override
+    public HttpToHttp2ConnectionHandlerBuilder encoderIgnoreMaxHeaderListSize(
+            boolean encoderIgnoreMaxHeaderListSize) {
+        return super.encoderIgnoreMaxHeaderListSize(encoderIgnoreMaxHeaderListSize);
+    }
+
+    @Override
+    public HttpToHttp2ConnectionHandlerBuilder decoderEnforceMaxConsecutiveEmptyDataFrames(
+            int maxConsecutiveEmptyFrames) {
+        return super.decoderEnforceMaxConsecutiveEmptyDataFrames(maxConsecutiveEmptyFrames);
+    }
+
+    @Override
+    public HttpToHttp2ConnectionHandlerBuilder decoderEnforceMaxRstFramesPerWindow(int maxRstFramesPerWindow,
+            int secondsPerWindow) {
+        return super.decoderEnforceMaxRstFramesPerWindow(maxRstFramesPerWindow, secondsPerWindow);
+    }
+
+    @Override
+    public HttpToHttp2ConnectionHandlerBuilder encoderEnforceMaxRstFramesPerWindow(int maxRstFramesPerWindow,
+            int secondsPerWindow) {
+        return super.encoderEnforceMaxRstFramesPerWindow(maxRstFramesPerWindow, secondsPerWindow);
+    }
+
+    @Override
     @Deprecated
     public HttpToHttp2ConnectionHandlerBuilder initialHuffmanDecodeCapacity(int initialHuffmanDecodeCapacity) {
         return super.initialHuffmanDecodeCapacity(initialHuffmanDecodeCapacity);
@@ -91,6 +121,22 @@ public final class HttpToHttp2ConnectionHandlerBuilder extends
     }
 
     @Override
+    public HttpToHttp2ConnectionHandlerBuilder flushPreface(boolean flushPreface) {
+        return super.flushPreface(flushPreface);
+    }
+
+    /**
+     * Add {@code scheme} in {@link Http2Headers} if not already present.
+     *
+     * @param httpScheme {@link HttpScheme} type
+     * @return {@code this}.
+     */
+    public HttpToHttp2ConnectionHandlerBuilder httpScheme(HttpScheme httpScheme) {
+        this.httpScheme = httpScheme;
+        return self();
+    }
+
+    @Override
     public HttpToHttp2ConnectionHandler build() {
         return super.build();
     }
@@ -99,6 +145,6 @@ public final class HttpToHttp2ConnectionHandlerBuilder extends
     protected HttpToHttp2ConnectionHandler build(Http2ConnectionDecoder decoder, Http2ConnectionEncoder encoder,
                                                  Http2Settings initialSettings) {
         return new HttpToHttp2ConnectionHandler(decoder, encoder, initialSettings, isValidateHeaders(),
-                decoupleCloseAndGoAway());
+                decoupleCloseAndGoAway(), flushPreface(), httpScheme);
     }
 }

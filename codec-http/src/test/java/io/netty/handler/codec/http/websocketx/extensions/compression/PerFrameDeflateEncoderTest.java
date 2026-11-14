@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -24,12 +24,16 @@ import io.netty.handler.codec.compression.ZlibWrapper;
 import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.ContinuationWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.extensions.WebSocketExtension;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Random;
 
 import static io.netty.handler.codec.http.websocketx.extensions.WebSocketExtensionFilter.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PerFrameDeflateEncoderTest {
 
@@ -39,7 +43,7 @@ public class PerFrameDeflateEncoderTest {
     public void testCompressedFrame() {
         EmbeddedChannel encoderChannel = new EmbeddedChannel(new PerFrameDeflateEncoder(9, 15, false));
         EmbeddedChannel decoderChannel = new EmbeddedChannel(
-                ZlibCodecFactory.newZlibDecoder(ZlibWrapper.NONE));
+                ZlibCodecFactory.newZlibDecoder(ZlibWrapper.NONE, 0));
 
         // initialize
         byte[] payload = new byte[300];
@@ -98,7 +102,7 @@ public class PerFrameDeflateEncoderTest {
     public void testFramementedFrame() {
         EmbeddedChannel encoderChannel = new EmbeddedChannel(new PerFrameDeflateEncoder(9, 15, false));
         EmbeddedChannel decoderChannel = new EmbeddedChannel(
-                ZlibCodecFactory.newZlibDecoder(ZlibWrapper.NONE));
+                ZlibCodecFactory.newZlibDecoder(ZlibWrapper.NONE, 0));
 
         // initialize
         byte[] payload1 = new byte[100];

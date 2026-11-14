@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -21,8 +21,10 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.CodecException;
 import io.netty.handler.codec.TooLongFrameException;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class SerialMarshallingDecoderTest extends SerialCompatibleMarshallingDecoderTest {
 
@@ -40,12 +42,13 @@ public class SerialMarshallingDecoderTest extends SerialCompatibleMarshallingDec
     }
 
     @Override
-    protected void onTooBigFrame(EmbeddedChannel ch, ByteBuf input) {
-        try {
-            ch.writeInbound(input);
-            fail();
-        } catch (CodecException e) {
-            assertEquals(TooLongFrameException.class, e.getClass());
-        }
+    protected void onTooBigFrame(final EmbeddedChannel ch, final ByteBuf input) {
+        CodecException e = assertThrows(CodecException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                ch.writeInbound(input);
+            }
+        });
+        assertEquals(TooLongFrameException.class, e.getClass());
     }
 }

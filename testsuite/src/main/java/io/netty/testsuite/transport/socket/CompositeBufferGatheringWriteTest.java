@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -22,27 +22,37 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.util.ReferenceCountUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
     private static final int EXPECTED_BYTES = 20;
 
-    @Test(timeout = 10000)
-    public void testSingleCompositeBufferWrite() throws Throwable {
-        run();
+    @Test
+    @Timeout(value = 10000, unit = TimeUnit.MILLISECONDS)
+    public void testSingleCompositeBufferWrite(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testSingleCompositeBufferWrite(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testSingleCompositeBufferWrite(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -56,9 +66,26 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                 protected void initChannel(Channel ch) throws Exception {
                     ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                         @Override
-                        public void channelActive(ChannelHandlerContext ctx) throws Exception {
-                            ctx.writeAndFlush(newCompositeBuffer(ctx.alloc()))
-                                    .addListener(ChannelFutureListener.CLOSE);
+                        public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+                            ctx.writeAndFlush(newCompositeBuffer(ctx.alloc())).addListener(
+                                    new ChannelFutureListener() {
+                                @Override
+                                public void operationComplete(ChannelFuture future) {
+                                    if (!future.isSuccess()) {
+                                        ctx.close();
+                                    }
+                                    // Otherwise wait for the client to ack that it received everything
+                                    // (see channelRead below) before closing. Closing right after the write
+                                    // completes races with the client actually having read the data.
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                            // Any inbound data from the client is the ack that it received everything.
+                            ReferenceCountUtil.release(msg);
+                            ctx.close();
                         }
                     });
                 }
@@ -68,6 +95,7 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                 protected void initChannel(Channel ch) throws Exception {
                     ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                         private ByteBuf aggregator;
+                        private boolean acked;
                         @Override
                         public void handlerAdded(ChannelHandlerContext ctx) {
                             aggregator = ctx.alloc().buffer(EXPECTED_BYTES);
@@ -78,6 +106,14 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                             try {
                                 if (msg instanceof ByteBuf) {
                                     aggregator.writeBytes((ByteBuf) msg);
+                                    if (!acked && aggregator.readableBytes() >= EXPECTED_BYTES) {
+                                        acked = true;
+                                        if (clientReceived.compareAndSet(null, aggregator)) {
+                                            latch.countDown();
+                                        }
+                                        // Ack so the server knows it is safe to close.
+                                        ctx.writeAndFlush(ctx.alloc().buffer(1).writeByte(0));
+                                    }
                                 }
                             } finally {
                                 ReferenceCountUtil.release(msg);
@@ -90,6 +126,9 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                             if (!(cause instanceof IOException)) {
                                 clientReceived.set(cause);
                                 latch.countDown();
+                            } else if (!cause.getMessage().contains("reset")) {
+                                logger.warn("{} client got weird exception",
+                                        CompositeBufferGatheringWriteTest.this.getClass(), cause);
                             }
                         }
 
@@ -136,9 +175,15 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
         }
     }
 
-    @Test(timeout = 10000)
-    public void testCompositeBufferPartialWriteDoesNotCorruptData() throws Throwable {
-        run();
+    @Test
+    @Timeout(value = 10000, unit = TimeUnit.MILLISECONDS)
+    public void testCompositeBufferPartialWriteDoesNotCorruptData(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testCompositeBufferPartialWriteDoesNotCorruptData(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     protected void compositeBufferPartialWriteDoesNotCorruptDataInitServerConfig(ChannelConfig config,
@@ -166,7 +211,7 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                 protected void initChannel(Channel ch) throws Exception {
                     ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                         @Override
-                        public void channelActive(ChannelHandlerContext ctx) throws Exception {
+                        public void channelActive(final ChannelHandlerContext ctx) throws Exception {
                             compositeBufferPartialWriteDoesNotCorruptDataInitServerConfig(ctx.channel().config(),
                                     soSndBuf);
                             // First single write
@@ -191,7 +236,24 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                             // Write the remainder of the content
                             ctx.writeAndFlush(expectedContent.retainedSlice(expectedContent.readerIndex() + offset,
                                     expectedContent.readableBytes() - expectedContent.readerIndex() - offset))
-                                    .addListener(ChannelFutureListener.CLOSE);
+                                    .addListener(new ChannelFutureListener() {
+                                @Override
+                                public void operationComplete(ChannelFuture future) {
+                                    if (!future.isSuccess()) {
+                                        ctx.close();
+                                    }
+                                    // Otherwise wait for the client to ack that it received everything
+                                    // (see channelRead below) before closing. Closing right after the write
+                                    // completes races with the client actually having read the data.
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                            // Any inbound data from the client is the ack that it received everything.
+                            ReferenceCountUtil.release(msg);
+                            ctx.close();
                         }
 
                         @Override
@@ -200,6 +262,9 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                             if (!(cause instanceof IOException)) {
                                 clientReceived.set(cause);
                                 latch.countDown();
+                            } else if (!cause.getMessage().contains("reset")) {
+                                logger.warn("{} server got weird exception",
+                                        CompositeBufferGatheringWriteTest.this.getClass(), cause);
                             }
                         }
                     });
@@ -210,6 +275,7 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                 protected void initChannel(Channel ch) throws Exception {
                     ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                         private ByteBuf aggregator;
+                        private boolean acked;
                         @Override
                         public void handlerAdded(ChannelHandlerContext ctx) {
                             aggregator = ctx.alloc().buffer(expectedContent.readableBytes());
@@ -220,6 +286,14 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                             try {
                                 if (msg instanceof ByteBuf) {
                                     aggregator.writeBytes((ByteBuf) msg);
+                                    if (!acked && aggregator.readableBytes() >= expectedContent.readableBytes()) {
+                                        acked = true;
+                                        if (clientReceived.compareAndSet(null, aggregator)) {
+                                            latch.countDown();
+                                        }
+                                        // Ack so the server knows it is safe to close.
+                                        ctx.writeAndFlush(ctx.alloc().buffer(1).writeByte(0));
+                                    }
                                 }
                             } finally {
                                 ReferenceCountUtil.release(msg);
@@ -232,6 +306,9 @@ public class CompositeBufferGatheringWriteTest extends AbstractSocketTest {
                             if (!(cause instanceof IOException)) {
                                 clientReceived.set(cause);
                                 latch.countDown();
+                            } else if (!cause.getMessage().contains("reset")) {
+                                logger.warn("{} client got weird exception",
+                                        CompositeBufferGatheringWriteTest.this.getClass(), cause);
                             }
                         }
 

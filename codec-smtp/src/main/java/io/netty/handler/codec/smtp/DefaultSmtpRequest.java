@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -43,6 +43,7 @@ public final class DefaultSmtpRequest implements SmtpRequest {
      */
     public DefaultSmtpRequest(SmtpCommand command, CharSequence... parameters) {
         this.command = ObjectUtil.checkNotNull(command, "command");
+        SmtpUtils.validateSMTPParameters(parameters);
         this.parameters = SmtpUtils.toUnmodifiableList(parameters);
     }
 
@@ -55,6 +56,7 @@ public final class DefaultSmtpRequest implements SmtpRequest {
 
     DefaultSmtpRequest(SmtpCommand command, List<CharSequence> parameters) {
         this.command = ObjectUtil.checkNotNull(command, "command");
+        SmtpUtils.validateSMTPParameters(parameters);
         this.parameters = parameters != null ?
                 Collections.unmodifiableList(parameters) : Collections.<CharSequence>emptyList();
     }

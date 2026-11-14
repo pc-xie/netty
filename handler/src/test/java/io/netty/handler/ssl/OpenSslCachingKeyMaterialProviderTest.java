@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,13 +16,16 @@
 package io.netty.handler.ssl;
 
 import io.netty.buffer.UnpooledByteBufAllocator;
-import org.hamcrest.CoreMatchers;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.KeyManagerFactory;
 
-import static org.junit.Assert.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class OpenSslCachingKeyMaterialProviderTest extends OpenSslKeyMaterialProviderTest {
 
@@ -37,11 +40,6 @@ public class OpenSslCachingKeyMaterialProviderTest extends OpenSslKeyMaterialPro
                 factory.getKeyManagers()), password, Integer.MAX_VALUE);
     }
 
-    @Override
-    protected void assertRelease(OpenSslKeyMaterial material) {
-        Assert.assertFalse(material.release());
-    }
-
     @Test
     public void testMaterialCached() throws Exception {
         OpenSslKeyMaterialProvider provider = newMaterialProvider(newKeyManagerFactory(), PASSWORD);
@@ -50,14 +48,14 @@ public class OpenSslCachingKeyMaterialProviderTest extends OpenSslKeyMaterialPro
         assertNotNull(material);
         assertNotEquals(0, material.certificateChainAddress());
         assertNotEquals(0, material.privateKeyAddress());
-        assertEquals(2, material.refCnt());
+        assertEquals(3, material.refCnt());
 
         OpenSslKeyMaterial material2 = provider.chooseKeyMaterial(UnpooledByteBufAllocator.DEFAULT, EXISTING_ALIAS);
         assertNotNull(material2);
         assertEquals(material.certificateChainAddress(), material2.certificateChainAddress());
         assertEquals(material.privateKeyAddress(), material2.privateKeyAddress());
-        assertEquals(3, material.refCnt());
-        assertEquals(3, material2.refCnt());
+        assertEquals(4, material.refCnt());
+        assertEquals(4, material2.refCnt());
 
         assertFalse(material.release());
         assertFalse(material2.release());
@@ -74,8 +72,7 @@ public class OpenSslCachingKeyMaterialProviderTest extends OpenSslKeyMaterialPro
         OpenSslCachingX509KeyManagerFactory factory = new OpenSslCachingX509KeyManagerFactory(
                 super.newKeyManagerFactory("SunX509"));
         OpenSslKeyMaterialProvider provider = factory.newProvider(PASSWORD);
-        assertThat(provider,
-                CoreMatchers.<OpenSslKeyMaterialProvider>instanceOf(OpenSslCachingKeyMaterialProvider.class));
+        assertInstanceOf(OpenSslCachingKeyMaterialProvider.class, provider);
     }
 
     @Test
@@ -83,7 +80,6 @@ public class OpenSslCachingKeyMaterialProviderTest extends OpenSslKeyMaterialPro
         OpenSslCachingX509KeyManagerFactory factory = new OpenSslCachingX509KeyManagerFactory(
                 super.newKeyManagerFactory("PKIX"));
         OpenSslKeyMaterialProvider provider = factory.newProvider(PASSWORD);
-        assertThat(provider, CoreMatchers.not(
-                CoreMatchers.<OpenSslKeyMaterialProvider>instanceOf(OpenSslCachingKeyMaterialProvider.class)));
+        assertThat(provider).isNotInstanceOf(OpenSslCachingKeyMaterialProvider.class);
     }
 }

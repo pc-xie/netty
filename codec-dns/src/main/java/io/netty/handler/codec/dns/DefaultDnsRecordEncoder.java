@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,15 +18,12 @@ package io.netty.handler.codec.dns;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.handler.codec.UnsupportedMessageTypeException;
-import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.UnstableApi;
 
 /**
  * The default {@link DnsRecordEncoder} implementation.
  *
  * @see DefaultDnsRecordDecoder
  */
-@UnstableApi
 public class DefaultDnsRecordEncoder implements DnsRecordEncoder {
     private static final int PREFIX_MASK = Byte.SIZE - 1;
 
@@ -42,6 +39,10 @@ public class DefaultDnsRecordEncoder implements DnsRecordEncoder {
         out.writeShort(question.dnsClass());
     }
 
+    private static final Class<?>[] SUPPORTED_MESSAGES = new Class<?>[] {
+            DnsQuestion.class, DnsPtrRecord.class,
+            DnsOptEcsRecord.class, DnsOptCookieRecord.class, DnsOptPseudoRecord.class, DnsRawRecord.class };
+
     @Override
     public void encodeRecord(DnsRecord record, ByteBuf out) throws Exception {
         if (record instanceof DnsQuestion) {
@@ -50,12 +51,14 @@ public class DefaultDnsRecordEncoder implements DnsRecordEncoder {
             encodePtrRecord((DnsPtrRecord) record, out);
         } else if (record instanceof DnsOptEcsRecord) {
             encodeOptEcsRecord((DnsOptEcsRecord) record, out);
+        } else if (record instanceof DnsOptCookieRecord) {
+            encodeOptCookieRecord((DnsOptCookieRecord) record, out);
         } else if (record instanceof DnsOptPseudoRecord) {
             encodeOptPseudoRecord((DnsOptPseudoRecord) record, out);
         } else if (record instanceof DnsRawRecord) {
             encodeRawRecord((DnsRawRecord) record, out);
         } else {
-            throw new UnsupportedMessageTypeException(StringUtil.simpleClassName(record));
+            throw new UnsupportedMessageTypeException(record, SUPPORTED_MESSAGES);
         }
     }
 
@@ -68,12 +71,34 @@ public class DefaultDnsRecordEncoder implements DnsRecordEncoder {
 
     private void encodePtrRecord(DnsPtrRecord record, ByteBuf out) throws Exception {
         encodeRecord0(record, out);
+        int writerIndex = out.writerIndex();
+        // Skip 2 bytes as these will be used to encode the rdataLen after we know how many bytes were written.
+        // See https://www.rfc-editor.org/rfc/rfc1035.html#section-3.2.1
+        out.writerIndex(writerIndex + 2);
         encodeName(record.hostname(), out);
+        int rdLength = out.writerIndex() - (writerIndex + 2);
+        out.setShort(writerIndex, rdLength);
     }
 
     private void encodeOptPseudoRecord(DnsOptPseudoRecord record, ByteBuf out) throws Exception {
         encodeRecord0(record, out);
         out.writeShort(0);
+    }
+
+    private void encodeOptCookieRecord(DnsOptCookieRecord record, ByteBuf out) throws Exception {
+        byte[] clientCookie = record.clientCookie();
+        if (clientCookie.length != DnsOptCookieRecord.CLIENT_COOKIE_LENGTH) {
+            throw new IllegalArgumentException("clientCookie.length: " + clientCookie.length +
+                    " (expected: " + DnsOptCookieRecord.CLIENT_COOKIE_LENGTH + ')');
+        }
+        encodeRecord0(record, out);
+
+        out.writeShort(2 + // OPTION-CODE
+                2 + // OPTION-LENGTH
+                clientCookie.length); // RDLENGTH
+        out.writeShort(DnsOptCookieRecord.OPTION_CODE);
+        out.writeShort(clientCookie.length);
+        out.writeBytes(clientCookie);
     }
 
     private void encodeOptEcsRecord(DnsOptEcsRecord record, ByteBuf out) throws Exception {
@@ -90,7 +115,7 @@ public class DefaultDnsRecordEncoder implements DnsRecordEncoder {
                     sourcePrefixLength + " (expected: 0 >= " + addressBits + ')');
         }
 
-        // See http://www.iana.org/assignments/address-family-numbers/address-family-numbers.xhtml
+        // See https://www.iana.org/assignments/address-family-numbers/address-family-numbers.xhtml
         final short addressNumber = (short) (bytes.length == 4 ?
                 InternetProtocolFamily.IPv4.addressNumber() : InternetProtocolFamily.IPv6.addressNumber());
         int payloadLength = calculateEcsAddressLength(sourcePrefixLength, lowOrderBitsToPreserve);

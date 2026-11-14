@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,13 +18,18 @@ package io.netty.handler.codec.spdy;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import java.io.ByteArrayOutputStream;
+import java.util.zip.Deflater;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SpdyHeaderBlockZlibDecoderTest {
 
@@ -34,6 +39,9 @@ public class SpdyHeaderBlockZlibDecoderTest {
 
     private static final int maxHeaderSize = 8192;
 
+    private static final long MAX_DECOMPRESSED_SIZE =
+            SpdyHeaderBlockZlibDecoder.calculateMaxDecompressedSizePerBlock(maxHeaderSize);
+
     private static final String name = "name";
     private static final String value = "value";
     private static final byte[] nameBytes = name.getBytes();
@@ -42,13 +50,13 @@ public class SpdyHeaderBlockZlibDecoderTest {
     private SpdyHeaderBlockZlibDecoder decoder;
     private SpdyHeadersFrame frame;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         decoder = new SpdyHeaderBlockZlibDecoder(SpdyVersion.SPDY_3_1, maxHeaderSize);
         frame = new DefaultSpdyHeadersFrame(1);
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         decoder.end();
     }
@@ -170,9 +178,9 @@ public class SpdyHeaderBlockZlibDecoderTest {
         headerBlock.release();
     }
 
-    @Test(expected = SpdyProtocolException.class)
+    @Test
     public void testHeaderBlockExtraData() throws Exception {
-        ByteBuf headerBlock = Unpooled.buffer(37);
+        final ByteBuf headerBlock = Unpooled.buffer(37);
         headerBlock.writeBytes(zlibHeader);
         headerBlock.writeByte(0); // Non-compressed block
         headerBlock.writeByte(0x15); // little-endian length (21)
@@ -189,14 +197,20 @@ public class SpdyHeaderBlockZlibDecoderTest {
         headerBlock.writeByte(0x03); // adler-32 checksum
         headerBlock.writeByte(0xc9); // adler-32 checksum
         headerBlock.writeByte(0); // Data following zlib stream
-        decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+
+        assertThrows(SpdyProtocolException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+            }
+        });
 
         headerBlock.release();
     }
 
-    @Test(expected = SpdyProtocolException.class)
+    @Test
     public void testHeaderBlockInvalidDictionary() throws Exception {
-        ByteBuf headerBlock = Unpooled.buffer(7);
+        final ByteBuf headerBlock = Unpooled.buffer(7);
         headerBlock.writeByte(0x78);
         headerBlock.writeByte(0x3f);
         headerBlock.writeByte(0x01); // Unknown dictionary
@@ -204,22 +218,98 @@ public class SpdyHeaderBlockZlibDecoderTest {
         headerBlock.writeByte(0x03); // Unknown dictionary
         headerBlock.writeByte(0x04); // Unknown dictionary
         headerBlock.writeByte(0); // Non-compressed block
-        decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+
+        assertThrows(SpdyProtocolException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+            }
+        });
 
         headerBlock.release();
     }
 
-    @Test(expected = SpdyProtocolException.class)
+    @Test
     public void testHeaderBlockInvalidDeflateBlock() throws Exception {
-        ByteBuf headerBlock = Unpooled.buffer(11);
+        final ByteBuf headerBlock = Unpooled.buffer(11);
         headerBlock.writeBytes(zlibHeader);
         headerBlock.writeByte(0); // Non-compressed block
         headerBlock.writeByte(0x00); // little-endian length (0)
         headerBlock.writeByte(0x00); // little-endian length (0)
         headerBlock.writeByte(0x00); // invalid one's compliment
         headerBlock.writeByte(0x00); // invalid one's compliment
-        decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+
+        assertThrows(SpdyProtocolException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+            }
+        });
 
         headerBlock.release();
+    }
+
+    @Test
+    public void testHeaderBlockAtDecompressionCapIsAccepted() throws Exception {
+        long valueLength = MAX_DECOMPRESSED_SIZE - headerBlockOverhead();
+        ByteBuf headerBlock = Unpooled.wrappedBuffer(deflate(buildHeaderBlock((int) valueLength)));
+
+        decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+        decoder.endHeaderBlock(frame);
+
+        assertFalse(frame.isInvalid());
+        assertTrue(frame.isTruncated());
+
+        headerBlock.release();
+    }
+
+    @Test
+    public void testHeaderBlockExceedingDecompressionCapThrows() throws Exception {
+        long valueLength = MAX_DECOMPRESSED_SIZE - headerBlockOverhead() + 1;
+        final ByteBuf headerBlock = Unpooled.wrappedBuffer(deflate(buildHeaderBlock((int) valueLength)));
+
+        assertThrows(SpdyProtocolException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                decoder.decode(ByteBufAllocator.DEFAULT, headerBlock, frame);
+            }
+        });
+
+        headerBlock.release();
+    }
+
+    // 4 bytes for the header count, 4 bytes for the name length, the 1-byte name itself,
+    // and 4 bytes for the value length: everything but the value payload.
+    private static long headerBlockOverhead() {
+        return 4 + 4 + 1 + 4;
+    }
+
+    private static byte[] buildHeaderBlock(int valueLength) {
+        ByteBuf buf = Unpooled.buffer((int) headerBlockOverhead() + valueLength);
+        buf.writeInt(1); // number of Name/Value pairs
+        buf.writeInt(1); // length of name
+        buf.writeByte('n');
+        buf.writeInt(valueLength);
+        buf.writeZero(valueLength);
+
+        byte[] bytes = new byte[buf.readableBytes()];
+        buf.readBytes(bytes);
+        buf.release();
+        return bytes;
+    }
+
+    private static byte[] deflate(byte[] input) {
+        Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION);
+        deflater.setInput(input);
+        deflater.finish();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        while (!deflater.finished()) {
+            int n = deflater.deflate(chunk);
+            out.write(chunk, 0, n);
+        }
+        deflater.end();
+        return out.toByteArray();
     }
 }

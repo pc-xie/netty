@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -19,7 +19,6 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelHandlerContext;
@@ -29,19 +28,26 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.RecvByteBufAllocator;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.UncheckedBooleanSupplier;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static io.netty.testsuite.transport.TestsuitePermutation.randomBufferType;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SocketAutoReadTest extends AbstractSocketTest {
     @Test
-    public void testAutoReadOffDuringReadOnlyReadsOneTime() throws Throwable {
-        run();
+    public void testAutoReadOffDuringReadOnlyReadsOneTime(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testAutoReadOffDuringReadOnlyReadsOneTime(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testAutoReadOffDuringReadOnlyReadsOneTime(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -75,11 +81,12 @@ public class SocketAutoReadTest extends AbstractSocketTest {
             clientChannel = cb.connect(serverChannel.localAddress()).syncUninterruptibly().channel();
 
             // 3 bytes means 3 independent reads for TestRecvByteBufAllocator
-            clientChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[3]));
+            clientChannel.writeAndFlush(randomBufferType(clientChannel.alloc(), new byte[3], 0, 3));
             serverInitializer.autoReadHandler.assertSingleRead();
 
             // 3 bytes means 3 independent reads for TestRecvByteBufAllocator
-            serverInitializer.channel.writeAndFlush(Unpooled.wrappedBuffer(new byte[3]));
+            serverInitializer.channel.writeAndFlush(
+                    randomBufferType(serverInitializer.channel.alloc(), new byte[3], 0, 3));
             clientInitializer.autoReadHandler.assertSingleRead();
 
             if (readOutsideEventLoopThread) {

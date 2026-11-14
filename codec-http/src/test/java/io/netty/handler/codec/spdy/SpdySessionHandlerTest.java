@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,17 +15,25 @@
  */
 package io.netty.handler.codec.spdy;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SpdySessionHandlerTest {
 
@@ -41,7 +49,7 @@ public class SpdySessionHandlerTest {
 
     private static void assertDataFrame(Object msg, int streamId, boolean last) {
         assertNotNull(msg);
-        assertTrue(msg instanceof SpdyDataFrame);
+        assertInstanceOf(SpdyDataFrame.class, msg);
         SpdyDataFrame spdyDataFrame = (SpdyDataFrame) msg;
         assertEquals(streamId, spdyDataFrame.streamId());
         assertEquals(last, spdyDataFrame.isLast());
@@ -49,13 +57,13 @@ public class SpdySessionHandlerTest {
 
     private static void assertSynReply(Object msg, int streamId, boolean last, SpdyHeaders headers) {
         assertNotNull(msg);
-        assertTrue(msg instanceof SpdySynReplyFrame);
+        assertInstanceOf(SpdySynReplyFrame.class, msg);
         assertHeaders(msg, streamId, last, headers);
     }
 
     private static void assertRstStream(Object msg, int streamId, SpdyStreamStatus status) {
         assertNotNull(msg);
-        assertTrue(msg instanceof SpdyRstStreamFrame);
+        assertInstanceOf(SpdyRstStreamFrame.class, msg);
         SpdyRstStreamFrame spdyRstStreamFrame = (SpdyRstStreamFrame) msg;
         assertEquals(streamId, spdyRstStreamFrame.streamId());
         assertEquals(status, spdyRstStreamFrame.status());
@@ -63,21 +71,29 @@ public class SpdySessionHandlerTest {
 
     private static void assertPing(Object msg, int id) {
         assertNotNull(msg);
-        assertTrue(msg instanceof SpdyPingFrame);
+        assertInstanceOf(SpdyPingFrame.class, msg);
         SpdyPingFrame spdyPingFrame = (SpdyPingFrame) msg;
         assertEquals(id, spdyPingFrame.id());
     }
 
     private static void assertGoAway(Object msg, int lastGoodStreamId) {
         assertNotNull(msg);
-        assertTrue(msg instanceof SpdyGoAwayFrame);
+        assertInstanceOf(SpdyGoAwayFrame.class, msg);
         SpdyGoAwayFrame spdyGoAwayFrame = (SpdyGoAwayFrame) msg;
         assertEquals(lastGoodStreamId, spdyGoAwayFrame.lastGoodStreamId());
     }
 
+    private static void assertMaxConcurrentStreamsSettings(Object msg, int maxConcurrentStreams) {
+        assertNotNull(msg);
+        assertInstanceOf(SpdySettingsFrame.class, msg);
+        SpdySettingsFrame spdySettingsFrame = (SpdySettingsFrame) msg;
+        assertEquals(maxConcurrentStreams,
+                spdySettingsFrame.getValue(SpdySettingsFrame.SETTINGS_MAX_CONCURRENT_STREAMS));
+    }
+
     private static void assertHeaders(Object msg, int streamId, boolean last, SpdyHeaders headers) {
         assertNotNull(msg);
-        assertTrue(msg instanceof SpdyHeadersFrame);
+        assertInstanceOf(SpdyHeadersFrame.class, msg);
         SpdyHeadersFrame spdyHeadersFrame = (SpdyHeadersFrame) msg;
         assertEquals(streamId, spdyHeadersFrame.streamId());
         assertEquals(last, spdyHeadersFrame.isLast());
@@ -278,6 +294,123 @@ public class SpdySessionHandlerTest {
         assertNull(sessionHandler.readOutbound());
 
         sessionHandler.finish();
+    }
+
+    // Verifies the fix for the remote-initiated stream admission DoS: a SpdySessionHandler
+    // created with the default (no-arg concurrency) constructor must reject SYN_STREAM frames
+    // once the safe default limit (100, matching the HTTP/2 default) is reached, instead of
+    // accepting an unbounded number of remote-initiated streams.
+    private static void testSpdySessionHandlerDefaultMaxConcurrentStreams(SpdyVersion version, boolean server) {
+        EmbeddedChannel sessionHandler = new EmbeddedChannel(new SpdySessionHandler(version, server));
+
+        assertMaxConcurrentStreamsSettings(sessionHandler.readOutbound(), 100);
+        assertNull(sessionHandler.readOutbound());
+
+        int remoteStreamId = server ? 1 : 2;
+        for (int i = 0; i < 100; i++) {
+            SpdySynStreamFrame spdySynStreamFrame =
+                    new DefaultSpdySynStreamFrame(remoteStreamId, 0, (byte) 0);
+            spdySynStreamFrame.setUnidirectional(true);
+            sessionHandler.writeInbound(spdySynStreamFrame);
+            assertNull(sessionHandler.readOutbound());
+            remoteStreamId += 2;
+        }
+
+        // The 101st remote-initiated stream must be refused rather than accepted unconditionally.
+        SpdySynStreamFrame refusedFrame =
+                new DefaultSpdySynStreamFrame(remoteStreamId, 0, (byte) 0);
+        refusedFrame.setUnidirectional(true);
+        sessionHandler.writeInbound(refusedFrame);
+        assertRstStream(sessionHandler.readOutbound(), remoteStreamId, SpdyStreamStatus.REFUSED_STREAM);
+        assertNull(sessionHandler.readOutbound());
+
+        sessionHandler.finish();
+    }
+
+    // Verifies that the maxLocalConcurrentStreams constructor parameter is honored: streams
+    // beyond the configured limit are refused with RST_STREAM(REFUSED_STREAM), and streams
+    // within the limit are accepted normally.
+    private static void testSpdySessionHandlerCustomMaxConcurrentStreams(SpdyVersion version, boolean server) {
+        int maxConcurrentStreams = 4;
+        EmbeddedChannel sessionHandler =
+                new EmbeddedChannel(new SpdySessionHandler(version, server, maxConcurrentStreams));
+
+        assertMaxConcurrentStreamsSettings(sessionHandler.readOutbound(), maxConcurrentStreams);
+        assertNull(sessionHandler.readOutbound());
+
+        int remoteStreamId = server ? 1 : 2;
+        for (int i = 0; i < maxConcurrentStreams; i++) {
+            SpdySynStreamFrame spdySynStreamFrame =
+                    new DefaultSpdySynStreamFrame(remoteStreamId, 0, (byte) 0);
+            spdySynStreamFrame.setUnidirectional(true);
+            assertTrue(sessionHandler.writeInbound(spdySynStreamFrame));
+            assertNull(sessionHandler.readOutbound());
+            remoteStreamId += 2;
+        }
+
+        SpdySynStreamFrame refusedFrame =
+                new DefaultSpdySynStreamFrame(remoteStreamId, 0, (byte) 0);
+        refusedFrame.setUnidirectional(true);
+        assertTrue(sessionHandler.writeInbound(refusedFrame));
+        assertRstStream(sessionHandler.readOutbound(), remoteStreamId, SpdyStreamStatus.REFUSED_STREAM);
+        assertNull(sessionHandler.readOutbound());
+
+        assertTrue(sessionHandler.finishAndReleaseAll());
+    }
+
+    @Test
+    public void testDataFrameExceedingSessionWindowIsReleased() {
+        EmbeddedChannel sessionHandler = new EmbeddedChannel(new SpdySessionHandler(SpdyVersion.SPDY_3_1, true));
+        sessionHandler.writeInbound(new DefaultSpdySynStreamFrame(1, 0, (byte) 0));
+
+        // A DATA frame larger than the initial 64 KiB session window is a session error.
+        ByteBuf content = Unpooled.buffer(70000).writeZero(70000);
+        sessionHandler.writeInbound(new DefaultSpdyDataFrame(1, content));
+
+        assertEquals(0, content.refCnt());
+        Object frame;
+        boolean goAway = false;
+        while ((frame = sessionHandler.readOutbound()) != null) {
+            goAway |= frame instanceof SpdyGoAwayFrame;
+        }
+        assertTrue(goAway);
+        sessionHandler.finishAndReleaseAll();
+    }
+
+    @Test
+    public void testSpdySessionHandlerRejectsNonPositiveMaxConcurrentStreams() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new SpdySessionHandler(SpdyVersion.SPDY_3_1, true, 0);
+            }
+        });
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new SpdySessionHandler(SpdyVersion.SPDY_3_1, true, -1);
+            }
+        });
+    }
+
+    @Test
+    public void testSpdyClientSessionHandlerDefaultMaxConcurrentStreams() {
+        testSpdySessionHandlerDefaultMaxConcurrentStreams(SpdyVersion.SPDY_3_1, false);
+    }
+
+    @Test
+    public void testSpdyServerSessionHandlerDefaultMaxConcurrentStreams() {
+        testSpdySessionHandlerDefaultMaxConcurrentStreams(SpdyVersion.SPDY_3_1, true);
+    }
+
+    @Test
+    public void testSpdyClientSessionHandlerCustomMaxConcurrentStreams() {
+        testSpdySessionHandlerCustomMaxConcurrentStreams(SpdyVersion.SPDY_3_1, false);
+    }
+
+    @Test
+    public void testSpdyServerSessionHandlerCustomMaxConcurrentStreams() {
+        testSpdySessionHandlerCustomMaxConcurrentStreams(SpdyVersion.SPDY_3_1, true);
     }
 
     @Test

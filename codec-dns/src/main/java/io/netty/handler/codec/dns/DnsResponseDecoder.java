@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -55,10 +55,12 @@ abstract class DnsResponseDecoder<A extends SocketAddress> {
 
         boolean success = false;
         try {
-            final int questionCount = buffer.readUnsignedShort();
-            final int answerCount = buffer.readUnsignedShort();
-            final int authorityRecordCount = buffer.readUnsignedShort();
-            final int additionalRecordCount = buffer.readUnsignedShort();
+            final int questionCount = DnsCodecUtil.checkRecordCount(DnsSection.QUESTION, buffer.readUnsignedShort());
+            final int answerCount = DnsCodecUtil.checkRecordCount(DnsSection.ANSWER, buffer.readUnsignedShort());
+            final int authorityRecordCount =
+                    DnsCodecUtil.checkRecordCount(DnsSection.AUTHORITY, buffer.readUnsignedShort());
+            final int additionalRecordCount =
+                    DnsCodecUtil.checkRecordCount(DnsSection.ADDITIONAL, buffer.readUnsignedShort());
 
             decodeQuestions(response, buffer, questionCount);
             if (!decodeRecords(response, DnsSection.ANSWER, buffer, answerCount)) {

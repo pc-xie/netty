@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -27,7 +27,6 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.DefaultPromise;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -36,6 +35,9 @@ import java.net.SocketAddress;
 import java.nio.channels.ConnectionPendingException;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * A common abstraction for protocols that establish blind forwarding proxy tunnels.
+ */
 public abstract class ProxyHandler extends ChannelDuplexHandler {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(ProxyHandler.class);
@@ -60,7 +62,7 @@ public abstract class ProxyHandler extends ChannelDuplexHandler {
     private boolean suppressChannelReadComplete;
     private boolean flushedPrematurely;
     private final LazyChannelPromise connectPromise = new LazyChannelPromise();
-    private ScheduledFuture<?> connectTimeoutFuture;
+    private Future<?> connectTimeoutFuture;
     private final ChannelFutureListener writeListener = new ChannelFutureListener() {
         @Override
         public void operationComplete(ChannelFuture future) throws Exception {
@@ -147,6 +149,23 @@ public abstract class ProxyHandler extends ChannelDuplexHandler {
         } else {
             // channelActive() event has not been fired yet.  this.channelOpen() will be invoked
             // and initialization will occur there.
+        }
+    }
+
+    @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+        // The handler can be removed before the connection to the destination was established, for example because
+        // the connection to the proxy server failed. The channel never became active in that case, so
+        // channelInactive(...) is not called. Fail what is still pending, as otherwise the queued writes and
+        // connectFuture() would never be completed and the queued messages would leak.
+        // If the handshake already finished (the handler may be removed from a ProxyConnectionEvent listener while
+        // setConnectSuccess() runs), setConnectSuccess() or setConnectFailure() completes everything.
+        if (!finished) {
+            Exception cause = new ProxyConnectException(
+                    exceptionMessage("handler removed before the connection was established"));
+            failPendingWrites(cause);
+            connectPromise.tryFailure(cause);
+            cancelConnectTimeoutFuture();
         }
     }
 

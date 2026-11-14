@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,18 +16,41 @@
 
 package io.netty.handler.codec.mqtt;
 
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.DecoderException;
+import io.netty.util.Attribute;
+import io.netty.util.AttributeKey;
+
+import static io.netty.handler.codec.mqtt.MqttConstant.MIN_CLIENT_ID_LENGTH;
 
 final class MqttCodecUtil {
 
     private static final char[] TOPIC_WILDCARDS = {'#', '+'};
-    private static final int MIN_CLIENT_ID_LENGTH = 1;
-    private static final int MAX_CLIENT_ID_LENGTH = 23;
+
+    static final AttributeKey<MqttVersion> MQTT_VERSION_KEY = AttributeKey.valueOf("NETTY_CODEC_MQTT_VERSION");
+
+    static MqttVersion getMqttVersion(ChannelHandlerContext ctx) {
+        Attribute<MqttVersion> attr = ctx.channel().attr(MQTT_VERSION_KEY);
+        MqttVersion version = attr.get();
+        if (version == null) {
+            return MqttVersion.MQTT_3_1_1;
+        }
+        return version;
+    }
+
+    static void setMqttVersion(ChannelHandlerContext ctx, MqttVersion version) {
+        Attribute<MqttVersion> attr = ctx.channel().attr(MQTT_VERSION_KEY);
+        attr.set(version);
+    }
 
     static boolean isValidPublishTopicName(String topicName) {
+        if (topicName == null) {
+            return false;
+        }
         // publish topic name must not contain any wildcard
-        for (char c : TOPIC_WILDCARDS) {
-            if (topicName.indexOf(c) >= 0) {
+        for (int i = 0; i < topicName.length(); i++) {
+            char c = topicName.charAt(i);
+            if (c == '#' || c == '+' || c == '\0') {
                 return false;
             }
         }
@@ -38,20 +61,36 @@ final class MqttCodecUtil {
         return messageId != 0;
     }
 
-    static boolean isValidClientId(MqttVersion mqttVersion, String clientId) {
-        if (mqttVersion == MqttVersion.MQTT_3_1) {
-            return clientId != null && clientId.length() >= MIN_CLIENT_ID_LENGTH &&
-                clientId.length() <= MAX_CLIENT_ID_LENGTH;
+    static boolean isValidUserName(String userName) {
+        return userName == null || userName.indexOf('\0') == -1;
+    }
+
+    /**
+     * Determine if a client identifier is valid.
+     * @param mqttVersion The MQTT version semantics to use.
+     * @param maxClientIdLength The max client id length.
+     * @param clientId The client id value.
+     * @param acceptNulBytes MQTT normally does not allow NUL bytes in client identifiers.
+     * Set this to {@code true} to enable "legacy"/"lenient" mode, otherwise {@code false} for strict spec compliance.
+     * @return {@code true} if the client id is valid, otherwise {@code false}.
+     */
+    static boolean isValidClientId(MqttVersion mqttVersion, int maxClientIdLength, String clientId,
+                                   boolean acceptNulBytes) {
+        if (clientId == null || (!acceptNulBytes && clientId.indexOf('\0') != -1)) {
+            return false;
         }
-        if (mqttVersion == MqttVersion.MQTT_3_1_1) {
-            // In 3.1.3.1 Client Identifier of MQTT 3.1.1 specification, The Server MAY allow ClientId’s
+        if (mqttVersion == MqttVersion.MQTT_3_1) {
+            return clientId.length() >= MIN_CLIENT_ID_LENGTH && clientId.length() <= maxClientIdLength;
+        }
+        if (mqttVersion == MqttVersion.MQTT_3_1_1 || mqttVersion == MqttVersion.MQTT_5) {
+            // In 3.1.3.1 Client Identifier of MQTT 3.1.1 and 5.0 specifications, The Server MAY allow ClientId’s
             // that contain more than 23 encoded bytes. And, The Server MAY allow zero-length ClientId.
-            return clientId != null;
+            return true;
         }
         throw new IllegalArgumentException(mqttVersion + " is unknown mqtt version");
     }
 
-    static MqttFixedHeader validateFixedHeader(MqttFixedHeader mqttFixedHeader) {
+    static MqttFixedHeader validateFixedHeader(ChannelHandlerContext ctx, MqttFixedHeader mqttFixedHeader) {
         switch (mqttFixedHeader.messageType()) {
             case PUBREL:
             case SUBSCRIBE:
@@ -59,6 +98,12 @@ final class MqttCodecUtil {
                 if (mqttFixedHeader.qosLevel() != MqttQoS.AT_LEAST_ONCE) {
                     throw new DecoderException(mqttFixedHeader.messageType().name() + " message must have QoS 1");
                 }
+                return mqttFixedHeader;
+            case AUTH:
+                if (MqttCodecUtil.getMqttVersion(ctx) != MqttVersion.MQTT_5) {
+                    throw new DecoderException("AUTH message requires at least MQTT 5");
+                }
+                return mqttFixedHeader;
             default:
                 return mqttFixedHeader;
         }

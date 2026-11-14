@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -30,7 +30,11 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.local.LocalEventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.local.LocalAddress;
+import io.netty.channel.local.LocalChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.LineBasedFrameDecoder;
@@ -40,6 +44,7 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.resolver.NoopAddressResolverGroup;
 import io.netty.util.CharsetUtil;
+import io.netty.util.NetUtil;
 import io.netty.util.internal.SocketUtils;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.concurrent.Future;
@@ -47,15 +52,15 @@ import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -67,10 +72,13 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.Random;
 
-import static org.hamcrest.CoreMatchers.*;
-import static org.junit.Assert.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-@RunWith(Parameterized.class)
 public class ProxyHandlerTest {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(ProxyHandlerTest.class);
@@ -135,7 +143,6 @@ public class ProxyHandlerTest {
     // look for "Seed used: *" debug message in test logs
     private static final long reproducibleSeed = 0L;
 
-    @Parameters(name = "{index}: {0}")
     public static List<Object[]> testItems() {
 
         List<TestItem> items = Arrays.asList(
@@ -324,6 +331,12 @@ public class ProxyHandlerTest {
                         new Socks5ProxyHandler(socks5Proxy.address())),
 
                 new SuccessTestItem(
+                        "SOCKS5: successful connection to anonymous server, AUTO_READ on",
+                        DESTINATION,
+                        true,
+                        new Socks5ProxyHandler(anonSocks5Proxy.address(), USERNAME, PASSWORD)),
+
+                new SuccessTestItem(
                         "SOCKS5: successful connection, AUTO_READ on",
                         DESTINATION,
                         true,
@@ -422,32 +435,98 @@ public class ProxyHandlerTest {
         return params;
     }
 
-    @AfterClass
+    @AfterAll
     public static void stopServers() {
         for (ProxyServer p: allProxies) {
             p.stop();
         }
     }
 
-    private final TestItem testItem;
-
-    public ProxyHandlerTest(TestItem testItem) {
-        this.testItem = testItem;
-    }
-
-    @Before
+    @BeforeEach
     public void clearServerExceptions() throws Exception {
         for (ProxyServer p: allProxies) {
             p.clearExceptions();
         }
     }
 
-    @Test
-    public void test() throws Exception {
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("testItems")
+    public void test(TestItem testItem) throws Exception {
         testItem.test();
     }
 
-    @After
+    static Collection<String> proxyTypes() {
+        return Arrays.asList("http", "socks4", "socks5");
+    }
+
+    private static ProxyHandler newProxyHandler(String type, SocketAddress proxyAddress) {
+        if ("http".equals(type)) {
+            return new HttpProxyHandler(proxyAddress);
+        }
+        if ("socks4".equals(type)) {
+            return new Socks4ProxyHandler(proxyAddress);
+        }
+        if ("socks5".equals(type)) {
+            return new Socks5ProxyHandler(proxyAddress);
+        }
+        throw new IllegalArgumentException(type);
+    }
+
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("proxyTypes")
+    public void testPendingWritesFailedWhenConnectionToProxyFails(String type) throws Exception {
+        EventLoopGroup localGroup = new LocalEventLoopGroup(1);
+        try {
+            // Nothing is bound to this address, so the connection to the proxy server fails and the channel is
+            // closed without ever becoming active.
+            ProxyHandler handler = newProxyHandler(type, new LocalAddress("unbound-proxy-" + type));
+            Channel ch = new Bootstrap().group(localGroup).channel(LocalChannel.class).handler(handler)
+                    .register().sync().channel();
+
+            // Written before the connection is established, so the handler queues it until the proxy handshake
+            // is done.
+            ByteBuf msg = Unpooled.copiedBuffer("hello", CharsetUtil.US_ASCII);
+            ChannelFuture writeFuture = ch.writeAndFlush(msg);
+            ChannelFuture connectFuture = ch.connect(DESTINATION);
+
+            assertThat(connectFuture.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(connectFuture.cause()).isInstanceOf(ConnectException.class);
+            assertThat(writeFuture.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(writeFuture.cause()).isInstanceOf(ProxyConnectException.class);
+            assertThat(msg.refCnt()).isZero();
+            assertThat(handler.connectFuture().await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(handler.connectFuture().cause()).isInstanceOf(ProxyConnectException.class);
+        } finally {
+            localGroup.shutdownGracefully(0, 0, TimeUnit.SECONDS);
+        }
+    }
+
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("proxyTypes")
+    public void testPendingWritesFailedWhenHandlerRemoved(String type) {
+        ProxyHandler handler = newProxyHandler(type, new InetSocketAddress(NetUtil.LOCALHOST, 8080));
+        EmbeddedChannel ch = new EmbeddedChannel(handler) {
+            @Override
+            public boolean isActive() {
+                // Simulate that the connection to the proxy server is not established yet.
+                return false;
+            }
+        };
+        ByteBuf msg = Unpooled.copiedBuffer("hello", CharsetUtil.US_ASCII);
+        ChannelFuture writeFuture = ch.writeAndFlush(msg);
+        assertThat(writeFuture.isDone()).isFalse();
+
+        ch.pipeline().remove(handler);
+
+        assertThat(writeFuture.isDone()).isTrue();
+        assertThat(writeFuture.cause()).isInstanceOf(ProxyConnectException.class);
+        assertThat(msg.refCnt()).isZero();
+        assertThat(handler.connectFuture().isDone()).isTrue();
+        assertThat(handler.connectFuture().cause()).isInstanceOf(ProxyConnectException.class);
+        assertThat(ch.finishAndReleaseAll()).isFalse();
+    }
+
+    @AfterEach
     public void checkServerExceptions() throws Exception {
         for (ProxyServer p: allProxies) {
             p.checkExceptions();
@@ -595,8 +674,8 @@ public class ProxyHandlerTest {
             for (ChannelHandler h: clientHandlers) {
                 if (h instanceof ProxyHandler) {
                     ProxyHandler ph = (ProxyHandler) h;
-                    assertThat(ph.connectFuture().isDone(), is(true));
-                    assertThat(ph.connectFuture().isSuccess(), is(success));
+                    assertTrue(ph.connectFuture().isDone());
+                    assertEquals(ph.connectFuture().isSuccess(), success);
                 }
             }
         }
@@ -664,10 +743,10 @@ public class ProxyHandlerTest {
 
             assertProxyHandlers(true);
 
-            assertThat(testHandler.received.toArray(), is(new Object[] { "0", "1", "2", "3" }));
-            assertThat(testHandler.exceptions.toArray(), is(EmptyArrays.EMPTY_OBJECTS));
-            assertThat(testHandler.eventCount, is(expectedEventCount));
-            assertThat(finished, is(true));
+            assertArrayEquals(new Object[] { "0", "1", "2", "3" }, testHandler.received.toArray());
+            assertArrayEquals(EmptyArrays.EMPTY_OBJECTS, testHandler.exceptions.toArray());
+            assertEquals(expectedEventCount, testHandler.eventCount);
+            assertTrue(finished);
         }
     }
 
@@ -705,11 +784,11 @@ public class ProxyHandlerTest {
 
             assertProxyHandlers(false);
 
-            assertThat(testHandler.exceptions.size(), is(1));
+            assertEquals(1, testHandler.exceptions.size());
             Throwable e = testHandler.exceptions.poll();
-            assertThat(e, is(instanceOf(ProxyConnectException.class)));
-            assertThat(String.valueOf(e), containsString(expectedMessage));
-            assertThat(finished, is(true));
+            assertInstanceOf(ProxyConnectException.class, e);
+            assertThat(String.valueOf(e)).contains(expectedMessage);
+            assertTrue(finished);
         }
     }
 
@@ -751,11 +830,11 @@ public class ProxyHandlerTest {
 
             assertProxyHandlers(false);
 
-            assertThat(testHandler.exceptions.size(), is(1));
+            assertEquals(1, testHandler.exceptions.size());
             Throwable e = testHandler.exceptions.poll();
-            assertThat(e, is(instanceOf(ProxyConnectException.class)));
-            assertThat(String.valueOf(e), containsString("timeout"));
-            assertThat(finished, is(true));
+            assertInstanceOf(ProxyConnectException.class, e);
+            assertThat(String.valueOf(e)).contains("timeout");
+            assertTrue(finished);
         }
     }
 }

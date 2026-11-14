@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,35 +16,47 @@
 package io.netty.util.concurrent;
 
 import io.netty.util.NettyRuntime;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-@RunWith(Parameterized.class)
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class NonStickyEventExecutorGroupTest {
+    private static final String PARAMETERIZED_NAME = "{index}: maxTaskExecutePerRun = {0}";
 
-    private final int maxTaskExecutePerRun;
-
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testInvalidGroup() {
-        EventExecutorGroup group = new DefaultEventExecutorGroup(1);
+        final EventExecutorGroup group = new DefaultEventExecutorGroup(1);
         try {
-            new NonStickyEventExecutorGroup(group);
+            assertThrows(IllegalArgumentException.class, new Executable() {
+                @Override
+                public void execute() {
+                    new NonStickyEventExecutorGroup(group);
+                }
+            });
         } finally {
             group.shutdownGracefully();
         }
     }
 
-    @Parameterized.Parameters(name = "{index}: maxTaskExecutePerRun = {0}")
     public static Collection<Object[]> data() throws Exception {
         List<Object[]> params = new ArrayList<Object[]>();
         params.add(new Object[] {64});
@@ -54,12 +66,10 @@ public class NonStickyEventExecutorGroupTest {
         return params;
     }
 
-    public NonStickyEventExecutorGroupTest(int maxTaskExecutePerRun) {
-        this.maxTaskExecutePerRun = maxTaskExecutePerRun;
-    }
-
-    @Test(timeout = 10000)
-    public void testOrdering() throws Throwable {
+    @ParameterizedTest(name = PARAMETERIZED_NAME)
+    @MethodSource("data")
+    @Timeout(value = 10000, unit = TimeUnit.MILLISECONDS)
+    public void testOrdering(int maxTaskExecutePerRun) throws Throwable {
         final int threads = NettyRuntime.availableProcessors() * 2;
         final EventExecutorGroup group = new UnorderedThreadPoolEventExecutor(threads);
         final NonStickyEventExecutorGroup nonStickyGroup = new NonStickyEventExecutorGroup(group, maxTaskExecutePerRun);
@@ -94,8 +104,9 @@ public class NonStickyEventExecutorGroupTest {
         }
     }
 
-    @Test
-    public void testRaceCondition() throws InterruptedException {
+    @ParameterizedTest(name = PARAMETERIZED_NAME)
+    @MethodSource("data")
+    public void testRaceCondition(int maxTaskExecutePerRun) throws InterruptedException {
         EventExecutorGroup group = new UnorderedThreadPoolEventExecutor(1);
         NonStickyEventExecutorGroup nonStickyGroup = new NonStickyEventExecutorGroup(group, maxTaskExecutePerRun);
 
@@ -113,19 +124,166 @@ public class NonStickyEventExecutorGroupTest {
                             latch.countDown();
                         }
                     });
-                    Assert.assertTrue(firstCompleted.await(1, TimeUnit.SECONDS));
+                    assertTrue(firstCompleted.await(1, TimeUnit.SECONDS));
                 }
 
-                Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+                assertTrue(latch.await(5, TimeUnit.SECONDS));
             }
         } finally {
             nonStickyGroup.shutdownGracefully();
         }
     }
 
+    @Test
+    public void testInEventLoopAfterReschedulingFailure() throws Exception {
+        final UnorderedThreadPoolEventExecutor underlying = new UnorderedThreadPoolEventExecutor(1);
+        final AtomicInteger executeCount = new AtomicInteger();
+
+        final EventExecutorGroup wrapper = new AbstractEventExecutorGroup() {
+            @Override
+            public void shutdown() {
+                shutdownGracefully();
+            }
+
+            private final EventExecutor executor = new AbstractEventExecutor(this) {
+                @Override
+                public boolean inEventLoop(Thread thread) {
+                    return underlying.inEventLoop(thread);
+                }
+
+                @Override
+                public void shutdown() {
+                    shutdownGracefully();
+                }
+
+                @Override
+                public void execute(Runnable command) {
+                    // Reject the 2nd execute() call (the reschedule attempt)
+                    // 1st call: initial task submission
+                    // 2nd call: reschedule after maxTaskExecutePerRun
+                    if (executeCount.incrementAndGet() == 2) {
+                        throw new RejectedExecutionException("Simulated queue full");
+                    }
+                    underlying.execute(command);
+                }
+
+                @Override
+                public boolean isShuttingDown() {
+                    return underlying.isShuttingDown();
+                }
+
+                @Override
+                public Future<?> shutdownGracefully(long quietPeriod, long timeout, TimeUnit unit) {
+                    return underlying.shutdownGracefully(quietPeriod, timeout, unit);
+                }
+
+                @Override
+                public Future<?> terminationFuture() {
+                    return underlying.terminationFuture();
+                }
+
+                @Override
+                public boolean isShutdown() {
+                    return underlying.isShutdown();
+                }
+
+                @Override
+                public boolean isTerminated() {
+                    return underlying.isTerminated();
+                }
+
+                @Override
+                public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+                    return underlying.awaitTermination(timeout, unit);
+                }
+            };
+
+            @Override
+            public EventExecutor next() {
+                return executor;
+            }
+
+            @Override
+            public Iterator<EventExecutor> iterator() {
+                return Collections.singletonList(executor).iterator();
+            }
+
+            @Override
+            public boolean isShuttingDown() {
+                return underlying.isShuttingDown();
+            }
+
+            @Override
+            public Future<?> shutdownGracefully(long quietPeriod, long timeout, TimeUnit unit) {
+                return underlying.shutdownGracefully(quietPeriod, timeout, unit);
+            }
+
+            @Override
+            public Future<?> terminationFuture() {
+                return underlying.terminationFuture();
+            }
+
+            @Override
+            public boolean isShutdown() {
+                return underlying.isShutdown();
+            }
+
+            @Override
+            public boolean isTerminated() {
+                return underlying.isTerminated();
+            }
+
+            @Override
+            public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+                return underlying.awaitTermination(timeout, unit);
+            }
+        };
+
+        // Use maxTaskExecutePerRun=1 so reschedule happens after first task
+        NonStickyEventExecutorGroup nonStickyGroup = new NonStickyEventExecutorGroup(wrapper, 1);
+
+        try {
+            final EventExecutor executor = nonStickyGroup.next();
+
+            final CountDownLatch latch = new CountDownLatch(1);
+            final AtomicReference<Boolean> inEventLoopResult = new AtomicReference<Boolean>();
+
+            // Submit 2 tasks:
+            // Task 1: completes, triggers reschedule which will be rejected
+            // Task 2: verifies inEventLoop() still works after failed reschedule
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    // First task - will trigger reschedule attempt that fails
+                }
+            });
+
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    // This runs AFTER the failed rescheduling
+                    // WITHOUT line 262 fix: executingThread is null, inEventLoop() returns false
+                    // WITH line 262 fix: executingThread restored, inEventLoop() returns true
+                    inEventLoopResult.set(executor.inEventLoop());
+                    latch.countDown();
+                }
+            });
+
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "Tasks should complete");
+            Boolean result = inEventLoopResult.get();
+            assertNotNull(result, "inEventLoop() should have been called");
+            assertTrue(result,
+                "inEventLoop() should return true even after failed reschedule attempt. " +
+                "This indicates executingThread was properly restored in the exception handler.");
+        } finally {
+            nonStickyGroup.shutdownGracefully();
+            underlying.shutdownGracefully();
+        }
+    }
+
     private static void execute(EventExecutorGroup group, CountDownLatch startLatch) throws Throwable {
-        EventExecutor executor = group.next();
-        Assert.assertTrue(executor instanceof OrderedEventExecutor);
+        final EventExecutor executor = group.next();
+        assertInstanceOf(OrderedEventExecutor.class, executor);
         final AtomicReference<Throwable> cause = new AtomicReference<Throwable>();
         final AtomicInteger last = new AtomicInteger();
         int tasks = 10000;
@@ -135,10 +293,15 @@ public class NonStickyEventExecutorGroupTest {
 
         for (int i = 1 ; i <= tasks; i++) {
             final int id = i;
+            assertFalse(executor.inEventLoop());
+            assertFalse(executor.inEventLoop(Thread.currentThread()));
             futures.add(executor.submit(new Runnable() {
                 @Override
                 public void run() {
                     try {
+                        assertTrue(executor.inEventLoop(Thread.currentThread()));
+                        assertTrue(executor.inEventLoop());
+
                         if (cause.get() == null) {
                             int lastId = last.get();
                             if (lastId >= id) {

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,6 +17,8 @@ package io.netty.handler.codec.rtsp;
 
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.internal.ObjectUtil;
+
+import java.util.Locale;
 
 /**
  * The version of RTSP.
@@ -37,12 +39,17 @@ public final class RtspVersions {
     public static HttpVersion valueOf(String text) {
         ObjectUtil.checkNotNull(text, "text");
 
-        text = text.trim().toUpperCase();
-        if ("RTSP/1.0".equals(text)) {
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("text must not be empty");
+        }
+        // toUpperCase() must specify Locale.US so the comparison against "RTSP/1.0" is not
+        // affected by the JVM default locale (e.g. Turkish, where 'i' uppercases to 'İ').
+        String upper = text.toUpperCase(Locale.US);
+        if ("RTSP/1.0".equals(upper)) {
             return RTSP_1_0;
         }
 
-        return new HttpVersion(text, true);
+        return new HttpVersion(upper, true);
     }
 
     private RtspVersions() {

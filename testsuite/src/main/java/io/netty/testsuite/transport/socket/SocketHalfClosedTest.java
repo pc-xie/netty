@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -19,6 +19,8 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelFuture;
@@ -29,14 +31,19 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.RecvByteBufAllocator;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.oio.OioEventLoopGroup;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.channel.socket.ChannelOutputShutdownEvent;
 import io.netty.channel.socket.DuplexChannel;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.UncheckedBooleanSupplier;
 import io.netty.util.internal.PlatformDependent;
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -44,14 +51,236 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
+@Timeout(value = 20000, unit = MILLISECONDS)
 public class SocketHalfClosedTest extends AbstractSocketTest {
-    @Test(timeout = 10000)
-    public void testHalfClosureOnlyOneEventWhenAutoRead() throws Throwable {
-        run();
+
+    protected int maxReadCompleteWithNoDataAfterInputShutdown() {
+        return 2; // nio needs read flag to detect full closure.
+    }
+
+    @Test
+    public void testAllDataReadEventTriggeredAfterHalfClosure(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                if (bootstrap.config().group() instanceof OioEventLoopGroup) {
+                    logger.debug("Ignoring test for incompatible OIO event system");
+                    return;
+                } else if (bootstrap.config().group() instanceof NioEventLoopGroup) {
+                    logger.debug("Ignoring test for incompatible NioHandler");
+                    return;
+                }
+                allDataReadEventTriggeredAfterHalfClosure(serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    private void allDataReadEventTriggeredAfterHalfClosure(ServerBootstrap sb, Bootstrap cb) throws Throwable {
+        final int totalServerBytesWritten = 1;
+        final CountDownLatch clientReadAllDataLatch = new CountDownLatch(1);
+        final CountDownLatch clientHalfClosedLatch = new CountDownLatch(1);
+        final CountDownLatch clientHalfClosedAllBytesRead = new CountDownLatch(1);
+        final AtomicInteger clientReadCompletes = new AtomicInteger();
+        final AtomicInteger clientZeroDataReadCompletes = new AtomicInteger();
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+        final AtomicReference<Channel> serverChildChannel = new AtomicReference<Channel>();
+        try {
+            cb.option(ChannelOption.ALLOW_HALF_CLOSURE, true)
+                    .option(ChannelOption.AUTO_CLOSE, false)
+                    .option(ChannelOption.AUTO_READ, false);
+
+            sb.option(ChannelOption.ALLOW_HALF_CLOSURE, true)
+                    .option(ChannelOption.AUTO_CLOSE, false)
+                    .childOption(ChannelOption.TCP_NODELAY, true);
+
+            sb.childHandler(new ChannelInitializer<Channel>() {
+                @Override
+                protected void initChannel(Channel ch) throws Exception {
+                    serverChildChannel.set(ch);
+                    ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void channelActive(ChannelHandlerContext ctx) throws Exception {
+                            ByteBuf buf = ctx.alloc().buffer(totalServerBytesWritten);
+                            buf.writerIndex(buf.capacity());
+                            ctx.writeAndFlush(buf);
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                            ctx.close();
+                        }
+                    });
+                }
+            });
+
+            // client.
+            cb.handler(new ChannelInitializer<Channel>() {
+                @Override
+                protected void initChannel(final Channel ch) {
+                    ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                        private int bytesRead;
+                        private int bytesSinceReadComplete;
+
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                            ByteBuf buf = (ByteBuf) msg;
+                            bytesRead += buf.readableBytes();
+                            bytesSinceReadComplete += buf.readableBytes();
+                            buf.release();
+                        }
+
+                        @Override
+                        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+                            if (evt == ChannelInputShutdownEvent.INSTANCE) {
+                                clientHalfClosedLatch.countDown();
+                            } else if (evt == ChannelInputShutdownReadComplete.INSTANCE) {
+                                clientHalfClosedAllBytesRead.countDown();
+                                ctx.close();
+                            }
+                        }
+
+                        @Override
+                        public void channelReadComplete(ChannelHandlerContext ctx) {
+                            if (bytesSinceReadComplete == 0) {
+                                clientZeroDataReadCompletes.incrementAndGet();
+                            } else {
+                                bytesSinceReadComplete = 0;
+                            }
+                            clientReadCompletes.incrementAndGet();
+                            if (bytesRead == totalServerBytesWritten) {
+                                // Bounce this through the event loop to make sure it happens after we're done
+                                // with the read operation.
+                                ch.eventLoop().execute(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        clientReadAllDataLatch.countDown();
+                                    }
+                                });
+                            } else {
+                                ctx.read();
+                            }
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                            ctx.fireExceptionCaught(cause);
+                            ctx.close();
+                        }
+                    });
+                    ch.read();
+                }
+            });
+
+            serverChannel = sb.bind().sync().channel();
+            clientChannel = cb.connect(serverChannel.localAddress()).sync().channel();
+            clientChannel.read();
+
+            clientReadAllDataLatch.await();
+
+            // Now we need to trigger server half-close
+            ((DuplexChannel) serverChildChannel.get()).shutdownOutput();
+
+            clientHalfClosedLatch.await();
+            clientHalfClosedAllBytesRead.await();
+        } finally {
+            if (clientChannel != null) {
+                clientChannel.close().sync();
+            }
+            if (serverChannel != null) {
+                serverChannel.close().sync();
+            }
+        }
+    }
+
+    @Test
+    public void testHalfClosureReceiveDataOnFinalWait2StateWhenSoLingerSet(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testHalfClosureReceiveDataOnFinalWait2StateWhenSoLingerSet(serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    private void testHalfClosureReceiveDataOnFinalWait2StateWhenSoLingerSet(ServerBootstrap sb, Bootstrap cb)
+            throws Throwable {
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+
+        final CountDownLatch waitHalfClosureDone = new CountDownLatch(1);
+        try {
+            sb.childOption(ChannelOption.SO_LINGER, 1)
+              .childHandler(new ChannelInitializer<Channel>() {
+
+                  @Override
+                  protected void initChannel(Channel ch) throws Exception {
+                      ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+
+                            @Override
+                            public void channelActive(final ChannelHandlerContext ctx) {
+                                SocketChannel channel = (SocketChannel) ctx.channel();
+                                channel.shutdownOutput();
+                            }
+
+                            @Override
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                                ReferenceCountUtil.release(msg);
+                                waitHalfClosureDone.countDown();
+                            }
+                        });
+                  }
+              });
+
+            cb.option(ChannelOption.ALLOW_HALF_CLOSURE, true)
+              .handler(new ChannelInitializer<Channel>() {
+                  @Override
+                  protected void initChannel(Channel ch) throws Exception {
+                      ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+
+                            @Override
+                            public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+                                if (ChannelInputShutdownEvent.INSTANCE == evt) {
+                                    ctx.writeAndFlush(ctx.alloc().buffer().writeZero(16));
+                                }
+
+                                if (ChannelInputShutdownReadComplete.INSTANCE == evt) {
+                                    ctx.close();
+                                }
+                            }
+                        });
+                  }
+              });
+
+            serverChannel = sb.bind().sync().channel();
+            clientChannel = cb.connect(serverChannel.localAddress()).sync().channel();
+            waitHalfClosureDone.await();
+        } finally {
+            if (clientChannel != null) {
+                clientChannel.close().sync();
+            }
+
+            if (serverChannel != null) {
+                serverChannel.close().sync();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 10000, unit = MILLISECONDS)
+    public void testHalfClosureOnlyOneEventWhenAutoRead(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testHalfClosureOnlyOneEventWhenAutoRead(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testHalfClosureOnlyOneEventWhenAutoRead(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -120,8 +349,13 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
     }
 
     @Test
-    public void testAllDataReadAfterHalfClosure() throws Throwable {
-        run();
+    public void testAllDataReadAfterHalfClosure(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testAllDataReadAfterHalfClosure(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testAllDataReadAfterHalfClosure(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -129,14 +363,15 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
         testAllDataReadAfterHalfClosure(false, sb, cb);
     }
 
-    private static void testAllDataReadAfterHalfClosure(final boolean autoRead,
-                                                        ServerBootstrap sb, Bootstrap cb) throws Throwable {
+    private void testAllDataReadAfterHalfClosure(final boolean autoRead,
+                                                 ServerBootstrap sb, Bootstrap cb) throws Throwable {
         final int totalServerBytesWritten = 1024 * 16;
         final int numReadsPerReadLoop = 2;
         final CountDownLatch serverInitializedLatch = new CountDownLatch(1);
         final CountDownLatch clientReadAllDataLatch = new CountDownLatch(1);
         final CountDownLatch clientHalfClosedLatch = new CountDownLatch(1);
         final AtomicInteger clientReadCompletes = new AtomicInteger();
+        final AtomicInteger clientZeroDataReadCompletes = new AtomicInteger();
         Channel serverChannel = null;
         Channel clientChannel = null;
         try {
@@ -174,11 +409,13 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
                 protected void initChannel(Channel ch) throws Exception {
                     ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
                         private int bytesRead;
+                        private int bytesSinceReadComplete;
 
                         @Override
                         public void channelRead(ChannelHandlerContext ctx, Object msg) {
                             ByteBuf buf = (ByteBuf) msg;
                             bytesRead += buf.readableBytes();
+                            bytesSinceReadComplete += buf.readableBytes();
                             buf.release();
                         }
 
@@ -193,6 +430,11 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
 
                         @Override
                         public void channelReadComplete(ChannelHandlerContext ctx) {
+                            if (bytesSinceReadComplete == 0) {
+                                clientZeroDataReadCompletes.incrementAndGet();
+                            } else {
+                                bytesSinceReadComplete = 0;
+                            }
                             clientReadCompletes.incrementAndGet();
                             if (bytesRead == totalServerBytesWritten) {
                                 clientReadAllDataLatch.countDown();
@@ -217,8 +459,14 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
             serverInitializedLatch.await();
             clientReadAllDataLatch.await();
             clientHalfClosedLatch.await();
-            assertTrue("too many read complete events: " + clientReadCompletes.get(),
-                    totalServerBytesWritten / numReadsPerReadLoop + 10 > clientReadCompletes.get());
+            // In practice this should be much less, as we allow numReadsPerReadLoop per wakeup, but we limit the
+            // number of bytes to 1 per read so in theory we may need more. We check below that readComplete is called
+            // when data is actually read.
+            assertTrue(totalServerBytesWritten > clientReadCompletes.get(),
+                    "too many read complete events: " + clientReadCompletes.get());
+            assertTrue(clientZeroDataReadCompletes.get() <= maxReadCompleteWithNoDataAfterInputShutdown(),
+                    "too many readComplete with no data: " + clientZeroDataReadCompletes.get() + " readComplete: " +
+                            clientReadCompletes.get());
         } finally {
             if (clientChannel != null) {
                 clientChannel.close().sync();
@@ -230,10 +478,15 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
     }
 
     @Test
-    public void testAutoCloseFalseDoesShutdownOutput() throws Throwable {
+    public void testAutoCloseFalseDoesShutdownOutput(TestInfo testInfo) throws Throwable {
         // This test only works on Linux / BSD / MacOS as we assume some semantics that are not true for Windows.
-        Assume.assumeFalse(PlatformDependent.isWindows());
-        run();
+        assumeFalse(PlatformDependent.isWindows());
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testAutoCloseFalseDoesShutdownOutput(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testAutoCloseFalseDoesShutdownOutput(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -249,7 +502,7 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
                                                              Bootstrap cb) throws InterruptedException {
         final int expectedBytes = 100;
         final CountDownLatch serverReadExpectedLatch = new CountDownLatch(1);
-        final CountDownLatch doneLatch = new CountDownLatch(1);
+        final CountDownLatch doneLatch = new CountDownLatch(2);
         final AtomicReference<Throwable> causeRef = new AtomicReference<Throwable>();
         Channel serverChannel = null;
         Channel clientChannel = null;
@@ -261,9 +514,9 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
                     .childOption(ChannelOption.AUTO_CLOSE, false)
                     .childOption(ChannelOption.SO_LINGER, 0);
 
-            final SimpleChannelInboundHandler<ByteBuf> leaderHandler = new AutoCloseFalseLeader(expectedBytes,
+            final AutoCloseFalseLeader leaderHandler = new AutoCloseFalseLeader(expectedBytes,
                     serverReadExpectedLatch, doneLatch, causeRef);
-            final SimpleChannelInboundHandler<ByteBuf> followerHandler = new AutoCloseFalseFollower(expectedBytes,
+            final AutoCloseFalseFollower followerHandler = new AutoCloseFalseFollower(expectedBytes,
                     serverReadExpectedLatch, doneLatch, causeRef);
             sb.childHandler(new ChannelInitializer<Channel>() {
                 @Override
@@ -284,6 +537,7 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
 
             doneLatch.await();
             assertNull(causeRef.get());
+            assertTrue(leaderHandler.seenOutputShutdown);
         } finally {
             if (clientChannel != null) {
                 clientChannel.close().sync();
@@ -365,7 +619,7 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
         private final CountDownLatch doneLatch;
         private final AtomicReference<Throwable> causeRef;
         private int bytesRead;
-        private boolean seenOutputShutdown;
+        boolean seenOutputShutdown;
 
         AutoCloseFalseLeader(int expectedBytes, CountDownLatch followerCloseLatch, CountDownLatch doneLatch,
                              AtomicReference<Throwable> causeRef) {
@@ -401,10 +655,6 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
             bytesRead += msg.readableBytes();
             if (bytesRead >= expectedBytes) {
-                if (!seenOutputShutdown) {
-                    causeRef.set(new IllegalStateException(
-                            ChannelOutputShutdownEvent.class.getSimpleName() + " event was not seen"));
-                }
                 doneLatch.countDown();
             }
         }
@@ -413,6 +663,7 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
             if (evt instanceof ChannelOutputShutdownEvent) {
                 seenOutputShutdown = true;
+                doneLatch.countDown();
             }
         }
 
@@ -436,8 +687,13 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
     }
 
     @Test
-    public void testAllDataReadClosure() throws Throwable {
-        run();
+    public void testAllDataReadClosure(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testAllDataReadClosure(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testAllDataReadClosure(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -537,8 +793,8 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
             serverInitializedLatch.await();
             clientReadAllDataLatch.await();
             clientHalfClosedLatch.await();
-            assertTrue("too many read complete events: " + clientReadCompletes.get(),
-                    totalServerBytesWritten / numReadsPerReadLoop + 10 > clientReadCompletes.get());
+            assertTrue(totalServerBytesWritten / numReadsPerReadLoop + 10 > clientReadCompletes.get(),
+                "too many read complete events: " + clientReadCompletes.get());
         } finally {
             if (clientChannel != null) {
                 clientChannel.close().sync();
@@ -546,6 +802,218 @@ public class SocketHalfClosedTest extends AbstractSocketTest {
             if (serverChannel != null) {
                 serverChannel.close().sync();
             }
+        }
+    }
+
+    @Test
+    public void testShutdownInputAllowsOutboundWrites(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testShutdownInputAllowsOutboundWrites(true, serverBootstrap, bootstrap);
+                testShutdownInputAllowsOutboundWrites(false, serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    private static void testShutdownInputAllowsOutboundWrites(final boolean clientInitiates, final ServerBootstrap sb,
+                                                              final Bootstrap cb)
+            throws InterruptedException {
+        final byte[] expectedBytes = new byte[100];
+        PlatformDependent.threadLocalRandom().nextBytes(expectedBytes);
+        final CountDownLatch readDoneLatch = new CountDownLatch(1);
+
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+        try {
+            final ShutdownInputWriter shutdownInputWriter = new ShutdownInputWriter(expectedBytes);
+            final ShutdownInputReader shutdownInputReader =
+                    new ShutdownInputReader(expectedBytes.length, readDoneLatch);
+            sb.childOption(ChannelOption.ALLOW_HALF_CLOSURE, true);
+            cb.option(ChannelOption.ALLOW_HALF_CLOSURE, true);
+            sb.childHandler(new ChannelInitializer<Channel>() {
+                @Override
+                protected void initChannel(Channel ch) throws Exception {
+                    ch.pipeline().addLast(clientInitiates? shutdownInputReader : shutdownInputWriter);
+                }
+            });
+            cb.handler(new ChannelInitializer<Channel>() {
+                @Override
+                protected void initChannel(Channel ch) throws Exception {
+                    ch.pipeline().addLast(clientInitiates? shutdownInputWriter : shutdownInputReader);
+                }
+            });
+            serverChannel = sb.bind().sync().channel();
+            clientChannel = cb.connect(serverChannel.localAddress()).sync().channel();
+            assertTrue(readDoneLatch.await(5, TimeUnit.SECONDS),
+                       "Timed out waiting for inbound data after input shutdown");
+            assertArrayEquals(expectedBytes, shutdownInputReader.receivedBytes());
+        } finally {
+            if (serverChannel != null) {
+                serverChannel.close().sync();
+            }
+            if (clientChannel != null) {
+                clientChannel.close().sync();
+            }
+        }
+    }
+
+    private static final class ShutdownInputReader extends SimpleChannelInboundHandler<ByteBuf> {
+        private final CountDownLatch readDoneLatch;
+        private final int expectedBytesCount;
+        private final ByteBuf receivedMsgs;
+        private byte[] actualBytes;
+
+        ShutdownInputReader(final int expectedBytesCount,
+                            final CountDownLatch readDoneLatch) {
+            this.readDoneLatch = readDoneLatch;
+            this.expectedBytesCount = expectedBytesCount;
+            this.receivedMsgs = Unpooled.buffer(expectedBytesCount);
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
+            receivedMsgs.writeBytes(msg);
+            if (receivedMsgs.readableBytes() == expectedBytesCount) {
+                actualBytes = ByteBufUtil.getBytes(receivedMsgs);
+                readDoneLatch.countDown();
+            }
+        }
+
+        @Override
+        public void handlerRemoved(ChannelHandlerContext ctx) {
+            receivedMsgs.release();
+        }
+
+        byte[] receivedBytes() {
+            return actualBytes;
+        }
+    }
+
+    private static final class ShutdownInputWriter extends ChannelInboundHandlerAdapter {
+        private final byte[] expectedBytes;
+
+        ShutdownInputWriter(final byte[] expectedBytes) {
+            this.expectedBytes = expectedBytes;
+        }
+
+        @Override
+        public void channelActive(final ChannelHandlerContext ctx) throws Exception {
+            ((DuplexChannel) ctx.channel()).shutdownInput()
+                .addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture future) {
+                        ctx.writeAndFlush(Unpooled.wrappedBuffer(expectedBytes));
+                    }
+                });
+        }
+    }
+
+    @Test
+    public void testShutdownOutputAllowsInboundReads(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testShutdownOutputAllowsInboundReads(true, serverBootstrap, bootstrap);
+                testShutdownOutputAllowsInboundReads(false, serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    private static void testShutdownOutputAllowsInboundReads(final boolean clientInitiates, final ServerBootstrap sb,
+                                                             final Bootstrap cb) throws InterruptedException {
+        final byte[] expectedBytes = new byte[100];
+        PlatformDependent.threadLocalRandom().nextBytes(expectedBytes);
+        final CountDownLatch readDoneLatch = new CountDownLatch(1);
+
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+        try {
+            final ShutdownOutputWriter shutdownOutputWriter = new ShutdownOutputWriter(expectedBytes);
+            final ShutdownOutputReader
+                    shutdownOutputReader =
+                    new ShutdownOutputReader(expectedBytes.length, readDoneLatch);
+            sb.childOption(ChannelOption.ALLOW_HALF_CLOSURE, true);
+            cb.option(ChannelOption.ALLOW_HALF_CLOSURE, true);
+            sb.childHandler(new ChannelInitializer<Channel>() {
+                @Override
+                protected void initChannel(Channel ch) throws Exception {
+                    ch.pipeline().addLast(clientInitiates? shutdownOutputWriter : shutdownOutputReader);
+                }
+            });
+            cb.handler(new ChannelInitializer<Channel>() {
+
+                @Override
+                protected void initChannel(Channel ch) throws Exception {
+                    ch.pipeline().addLast(clientInitiates? shutdownOutputReader : shutdownOutputWriter);
+                }
+            });
+
+            serverChannel = sb.bind().sync().channel();
+            clientChannel = cb.connect(serverChannel.localAddress()).sync().channel();
+            assertTrue(readDoneLatch.await(5, TimeUnit.SECONDS),
+                       "Timed out waiting for inbound data after output shutdown");
+            assertArrayEquals(expectedBytes, shutdownOutputReader.receivedBytes());
+        } finally {
+            if (serverChannel != null) {
+                serverChannel.close().sync();
+            }
+            if (clientChannel != null) {
+                clientChannel.close().sync();
+            }
+        }
+    }
+
+    private static final class ShutdownOutputWriter extends ChannelInboundHandlerAdapter {
+        private final byte[] expectedBytes;
+
+        ShutdownOutputWriter(final byte[] expectedBytes) {
+            this.expectedBytes = expectedBytes;
+        }
+
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+            if (evt == ChannelInputShutdownEvent.INSTANCE) {
+                ctx.writeAndFlush(Unpooled.wrappedBuffer(expectedBytes));
+            }
+            ctx.fireUserEventTriggered(evt);
+        }
+    }
+
+    private static final class ShutdownOutputReader extends SimpleChannelInboundHandler<ByteBuf> {
+        private final CountDownLatch readDoneLatch;
+        private final int expectedBytesCount;
+        private final ByteBuf receivedMsgs;
+        private byte[] actualbytes;
+
+        ShutdownOutputReader(final int expectedBytesCount,
+                             final CountDownLatch readDoneLatch) {
+            this.readDoneLatch = readDoneLatch;
+            this.expectedBytesCount = expectedBytesCount;
+            this.receivedMsgs = Unpooled.buffer(expectedBytesCount);
+        }
+
+        @Override
+        public void channelActive(ChannelHandlerContext ctx) {
+            ((DuplexChannel) ctx.channel()).shutdownOutput();
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
+            receivedMsgs.writeBytes(msg);
+            if (receivedMsgs.readableBytes() == expectedBytesCount) {
+                this.actualbytes = ByteBufUtil.getBytes(receivedMsgs);
+                readDoneLatch.countDown();
+            }
+        }
+
+        @Override
+        public void handlerRemoved(ChannelHandlerContext ctx) {
+            receivedMsgs.release();
+        }
+
+        byte[] receivedBytes() {
+            return actualbytes;
         }
     }
 

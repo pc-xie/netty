@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -24,11 +24,13 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.util.ReferenceCountUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class LocalTransportThreadModelTest2 {
 
@@ -36,12 +38,13 @@ public class LocalTransportThreadModelTest2 {
 
     static final int messageCountPerRun = 4;
 
-    @Test(timeout = 15000)
+    @Test
+    @Timeout(value = 15000, unit = TimeUnit.MILLISECONDS)
     public void testSocketReuse() throws InterruptedException {
         ServerBootstrap serverBootstrap = new ServerBootstrap();
         LocalHandler serverHandler = new LocalHandler("SERVER");
         serverBootstrap
-                .group(new DefaultEventLoopGroup(), new DefaultEventLoopGroup())
+                .group(new DefaultEventLoopGroup())
                 .channel(LocalServerChannel.class)
                 .childHandler(serverHandler);
 
@@ -68,6 +71,8 @@ public class LocalTransportThreadModelTest2 {
 
         assertEquals(count * 2 * messageCountPerRun, serverHandler.count.get() +
                 clientHandler.count.get());
+        serverBootstrap.config().group().shutdownGracefully().sync();
+        clientBootstrap.config().group().shutdownGracefully().sync();
     }
 
     public void close(final Channel localChannel, final LocalHandler localRegistrationHandler) {

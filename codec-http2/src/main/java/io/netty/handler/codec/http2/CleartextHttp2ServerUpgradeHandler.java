@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -22,7 +22,6 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpServerUpgradeHandler;
-import io.netty.util.internal.UnstableApi;
 
 import java.util.List;
 
@@ -37,9 +36,8 @@ import static io.netty.util.internal.ObjectUtil.checkNotNull;
  * And will update pipeline once it detect the connection is starting HTTP/2 by
  * prior knowledge or not.
  */
-@UnstableApi
 public final class CleartextHttp2ServerUpgradeHandler extends ByteToMessageDecoder {
-    private static final ByteBuf CONNECTION_PREFACE = unreleasableBuffer(connectionPrefaceBuf());
+    private static final ByteBuf CONNECTION_PREFACE = unreleasableBuffer(connectionPrefaceBuf()).asReadOnly();
 
     private final HttpServerCodec httpServerCodec;
     private final HttpServerUpgradeHandler httpServerUpgradeHandler;

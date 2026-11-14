@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -24,10 +24,16 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.util.BouncyCastleUtil;
 import io.netty.util.AttributeMap;
+import io.netty.util.CharsetUtil;
 import io.netty.util.DefaultAttributeMap;
+import io.netty.util.concurrent.ImmediateExecutor;
 import io.netty.util.internal.EmptyArrays;
+import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.UnstableApi;
 
+import java.io.BufferedInputStream;
 import java.security.Provider;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -47,21 +53,27 @@ import javax.net.ssl.TrustManagerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.security.AlgorithmParameters;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.KeyException;
 import java.security.KeyFactory;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
+import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executor;
 
 /**
@@ -98,8 +110,17 @@ public abstract class SslContext {
         }
     }
 
+    // Used to derive the session_id_context of server contexts, see deriveSessionIdContext(...).
+    private static final SecureRandom SESSION_ID_CONTEXT_SALT_GENERATOR = new SecureRandom();
+    private static final String SESSION_ID_CONTEXT_DOMAIN_SEPARATOR = "netty-server-session-id-context-v1";
+    // Needs to be at most SSL_MAX_SID_CTX_LENGTH (32) bytes, which is exactly the size of a SHA-256 digest.
+    private static final int SESSION_ID_CONTEXT_SALT_LENGTH = 32;
+
     private final boolean startTls;
     private final AttributeMap attributes = new DefaultAttributeMap();
+    final ResumptionController resumptionController;
+    private static final String OID_PKCS5_PBES2 = "1.2.840.113549.1.5.13";
+    private static final String PBES2 = "PBES2";
 
     /**
      * Returns the default server-side implementation provider currently in use.
@@ -435,7 +456,7 @@ public abstract class SslContext {
                                             toPrivateKey(keyFile, keyPassword),
                                             keyPassword, keyManagerFactory, ciphers, cipherFilter, apn,
                                             sessionCacheSize, sessionTimeout, ClientAuth.NONE, null,
-                                            false, false, keyStore);
+                                            false, false, null, keyStore);
         } catch (Exception e) {
             if (e instanceof SSLException) {
                 throw (SSLException) e;
@@ -451,11 +472,15 @@ public abstract class SslContext {
             X509Certificate[] keyCertChain, PrivateKey key, String keyPassword, KeyManagerFactory keyManagerFactory,
             Iterable<String> ciphers, CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn,
             long sessionCacheSize, long sessionTimeout, ClientAuth clientAuth, String[] protocols, boolean startTls,
-            boolean enableOcsp, String keyStoreType) throws SSLException {
+            boolean enableOcsp, SecureRandom secureRandom, String keyStoreType,
+            Map.Entry<SslContextOption<?>, Object>... ctxOptions)
+            throws SSLException {
 
         if (provider == null) {
             provider = defaultServerProvider();
         }
+
+        ResumptionController resumptionController = new ResumptionController();
 
         switch (provider) {
         case JDK:
@@ -465,19 +490,19 @@ public abstract class SslContext {
             return new JdkSslServerContext(sslContextProvider,
                     trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword,
                     keyManagerFactory, ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout,
-                    clientAuth, protocols, startTls, keyStoreType);
+                    clientAuth, protocols, startTls, secureRandom, keyStoreType, resumptionController);
         case OPENSSL:
             verifyNullSslContextProvider(provider, sslContextProvider);
             return new OpenSslServerContext(
                     trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword,
                     keyManagerFactory, ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout,
-                    clientAuth, protocols, startTls, enableOcsp, keyStoreType);
+                    clientAuth, protocols, startTls, enableOcsp, keyStoreType, resumptionController, ctxOptions);
         case OPENSSL_REFCNT:
             verifyNullSslContextProvider(provider, sslContextProvider);
             return new ReferenceCountedOpenSslServerContext(
                     trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword,
                     keyManagerFactory, ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout,
-                    clientAuth, protocols, startTls, enableOcsp, keyStoreType);
+                    clientAuth, protocols, startTls, enableOcsp, keyStoreType, resumptionController, ctxOptions);
         default:
             throw new Error(provider.toString());
         }
@@ -794,7 +819,7 @@ public abstract class SslContext {
                                             toX509Certificates(keyCertChainFile), toPrivateKey(keyFile, keyPassword),
                                             keyPassword, keyManagerFactory, ciphers, cipherFilter,
                                             apn, null, sessionCacheSize, sessionTimeout, false,
-                                            KeyStore.getDefaultType());
+                                            null, KeyStore.getDefaultType(), null);
         } catch (Exception e) {
             if (e instanceof SSLException) {
                 throw (SSLException) e;
@@ -809,10 +834,30 @@ public abstract class SslContext {
             X509Certificate[] trustCert, TrustManagerFactory trustManagerFactory,
             X509Certificate[] keyCertChain, PrivateKey key, String keyPassword, KeyManagerFactory keyManagerFactory,
             Iterable<String> ciphers, CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn, String[] protocols,
-            long sessionCacheSize, long sessionTimeout, boolean enableOcsp, String keyStoreType) throws SSLException {
+            long sessionCacheSize, long sessionTimeout, boolean enableOcsp,
+            SecureRandom secureRandom, String keyStoreType, String endpointIdentificationAlgorithm,
+            Map.Entry<SslContextOption<?>, Object>... options) throws SSLException {
+        return newClientContextInternal(provider, sslContextProvider, trustCert, trustManagerFactory, keyCertChain, key,
+                keyPassword, keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize,
+                sessionTimeout, false, enableOcsp, secureRandom, keyStoreType, endpointIdentificationAlgorithm,
+                options);
+    }
+
+    static SslContext newClientContextInternal(
+            SslProvider provider,
+            Provider sslContextProvider,
+            X509Certificate[] trustCert, TrustManagerFactory trustManagerFactory,
+            X509Certificate[] keyCertChain, PrivateKey key, String keyPassword, KeyManagerFactory keyManagerFactory,
+            Iterable<String> ciphers, CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn, String[] protocols,
+            long sessionCacheSize, long sessionTimeout, boolean startTls, boolean enableOcsp,
+            SecureRandom secureRandom, String keyStoreType, String endpointIdentificationAlgorithm,
+            Map.Entry<SslContextOption<?>, Object>... options) throws SSLException {
         if (provider == null) {
             provider = defaultClientProvider();
         }
+
+        ResumptionController resumptionController = new ResumptionController();
+
         switch (provider) {
             case JDK:
                 if (enableOcsp) {
@@ -821,19 +866,24 @@ public abstract class SslContext {
                 return new JdkSslClientContext(sslContextProvider,
                         trustCert, trustManagerFactory, keyCertChain, key, keyPassword,
                         keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize,
-                        sessionTimeout, keyStoreType);
+                        sessionTimeout, secureRandom, keyStoreType, endpointIdentificationAlgorithm,
+                        resumptionController);
             case OPENSSL:
                 verifyNullSslContextProvider(provider, sslContextProvider);
+                OpenSsl.ensureAvailability();
                 return new OpenSslClientContext(
                         trustCert, trustManagerFactory, keyCertChain, key, keyPassword,
                         keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize, sessionTimeout,
-                        enableOcsp, keyStoreType);
+                        startTls, enableOcsp, keyStoreType, endpointIdentificationAlgorithm,
+                        resumptionController, options);
             case OPENSSL_REFCNT:
                 verifyNullSslContextProvider(provider, sslContextProvider);
+                OpenSsl.ensureAvailability();
                 return new ReferenceCountedOpenSslClientContext(
                         trustCert, trustManagerFactory, keyCertChain, key, keyPassword,
                         keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize, sessionTimeout,
-                        enableOcsp, keyStoreType);
+                        startTls, enableOcsp, keyStoreType, endpointIdentificationAlgorithm,
+                        resumptionController, options);
             default:
                 throw new Error(provider.toString());
         }
@@ -862,7 +912,12 @@ public abstract class SslContext {
      * Creates a new instance.
      */
     protected SslContext(boolean startTls) {
+        this(startTls, null);
+    }
+
+    SslContext(boolean startTls, ResumptionController resumptionController) {
         this.startTls = startTls;
+        this.resumptionController = resumptionController;
     }
 
     /**
@@ -892,12 +947,16 @@ public abstract class SslContext {
     /**
      * Returns the size of the cache used for storing SSL session objects.
      */
-    public abstract long sessionCacheSize();
+    public long sessionCacheSize() {
+        return sessionContext().getSessionCacheSize();
+    }
 
     /**
      * Returns the timeout for the cached SSL session objects, in seconds.
      */
-    public abstract long sessionTimeout();
+    public long sessionTimeout() {
+        return sessionContext().getSessionTimeout();
+    }
 
     /**
      * @deprecated Use {@link #applicationProtocolNegotiator()} instead.
@@ -950,7 +1009,7 @@ public abstract class SslContext {
      * @see #newHandler(ByteBufAllocator)
      */
     protected SslHandler newHandler(ByteBufAllocator alloc, boolean startTls) {
-        return new SslHandler(newEngine(alloc), startTls);
+        return new SslHandler(newEngine(alloc), startTls, ImmediateExecutor.INSTANCE, resumptionController);
     }
 
     /**
@@ -987,7 +1046,7 @@ public abstract class SslContext {
      * @see #newHandler(ByteBufAllocator, String, int, boolean, Executor)
      */
     protected SslHandler newHandler(ByteBufAllocator alloc, boolean startTls, Executor executor) {
-        return new SslHandler(newEngine(alloc), startTls, executor);
+        return new SslHandler(newEngine(alloc), startTls, executor, resumptionController);
     }
 
     /**
@@ -1004,7 +1063,8 @@ public abstract class SslContext {
      * @see #newHandler(ByteBufAllocator, String, int, boolean, Executor)
      */
     protected SslHandler newHandler(ByteBufAllocator alloc, String peerHost, int peerPort, boolean startTls) {
-        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls);
+        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls, ImmediateExecutor.INSTANCE,
+                resumptionController);
     }
 
     /**
@@ -1042,7 +1102,8 @@ public abstract class SslContext {
 
     protected SslHandler newHandler(ByteBufAllocator alloc, String peerHost, int peerPort, boolean startTls,
                                     Executor delegatedTaskExecutor) {
-        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls, delegatedTaskExecutor);
+        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls, delegatedTaskExecutor,
+                resumptionController);
     }
 
     /**
@@ -1061,6 +1122,7 @@ public abstract class SslContext {
      *                             {@code key}
      * @throws InvalidAlgorithmParameterException if decryption algorithm parameters are somehow faulty
      */
+    @Deprecated
     protected static PKCS8EncodedKeySpec generateKeySpec(char[] password, byte[] key)
             throws IOException, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeySpecException,
             InvalidKeyException, InvalidAlgorithmParameterException {
@@ -1070,14 +1132,37 @@ public abstract class SslContext {
         }
 
         EncryptedPrivateKeyInfo encryptedPrivateKeyInfo = new EncryptedPrivateKeyInfo(key);
-        SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(encryptedPrivateKeyInfo.getAlgName());
+        String pbeAlgorithm = getPBEAlgorithm(encryptedPrivateKeyInfo);
+        SecretKeyFactory keyFactory = SecretKeyFactory.getInstance(pbeAlgorithm);
         PBEKeySpec pbeKeySpec = new PBEKeySpec(password);
         SecretKey pbeKey = keyFactory.generateSecret(pbeKeySpec);
 
-        Cipher cipher = Cipher.getInstance(encryptedPrivateKeyInfo.getAlgName());
+        Cipher cipher = Cipher.getInstance(pbeAlgorithm);
         cipher.init(Cipher.DECRYPT_MODE, pbeKey, encryptedPrivateKeyInfo.getAlgParameters());
 
         return encryptedPrivateKeyInfo.getKeySpec(cipher);
+    }
+
+    private static String getPBEAlgorithm(EncryptedPrivateKeyInfo encryptedPrivateKeyInfo) {
+        AlgorithmParameters parameters = encryptedPrivateKeyInfo.getAlgParameters();
+        String algName = encryptedPrivateKeyInfo.getAlgName();
+        // Java 8 ~ 16 returns OID_PKCS5_PBES2
+        // Java 17+ returns PBES2
+        if (PlatformDependent.javaVersion() >= 8 && parameters != null &&
+                (OID_PKCS5_PBES2.equals(algName) || PBES2.equals(algName))) {
+            /*
+             * This should be "PBEWith<prf>And<encryption>".
+             * Relying on the toString() implementation is potentially
+             * fragile but acceptable in this case since the JRE depends on
+             * the toString() implementation as well.
+             * In the future, if necessary, we can parse the value of
+             * parameters.getEncoded() but the associated complexity and
+             * unlikeliness of the JRE implementation changing means that
+             * Tomcat will use to toString() approach for now.
+             */
+            return parameters.toString();
+        }
+        return encryptedPrivateKeyInfo.getAlgName();
     }
 
     /**
@@ -1090,7 +1175,7 @@ public abstract class SslContext {
      * @param keyStoreType The KeyStore Type you want to use
      * @return generated {@link KeyStore}.
      */
-    static KeyStore buildKeyStore(X509Certificate[] certChain, PrivateKey key,
+    protected static KeyStore buildKeyStore(X509Certificate[] certChain, PrivateKey key,
                                   char[] keyPasswordChars, String keyStoreType)
             throws KeyStoreException, NoSuchAlgorithmException,
                    CertificateException, IOException {
@@ -1103,23 +1188,56 @@ public abstract class SslContext {
         return ks;
     }
 
-    static PrivateKey toPrivateKey(File keyFile, String keyPassword) throws NoSuchAlgorithmException,
+    protected static PrivateKey toPrivateKey(File keyFile, String keyPassword) throws NoSuchAlgorithmException,
                                                                 NoSuchPaddingException, InvalidKeySpecException,
                                                                 InvalidAlgorithmParameterException,
                                                                 KeyException, IOException {
+        return toPrivateKey(keyFile, keyPassword, true);
+    }
+
+    static PrivateKey toPrivateKey(File keyFile, String keyPassword, boolean tryBouncyCastle)
+            throws NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeySpecException,
+            InvalidAlgorithmParameterException,
+            KeyException, IOException {
         if (keyFile == null) {
             return null;
         }
+
+        // try BC first, if this fail fallback to original key extraction process
+        if (tryBouncyCastle && BouncyCastleUtil.isBcPkixAvailable()) {
+            PrivateKey pk = BouncyCastlePemReader.getPrivateKey(keyFile, keyPassword);
+            if (pk != null) {
+                return pk;
+            }
+        }
+
         return getPrivateKeyFromByteBuffer(PemReader.readPrivateKey(keyFile), keyPassword);
     }
 
-    static PrivateKey toPrivateKey(InputStream keyInputStream, String keyPassword) throws NoSuchAlgorithmException,
+    protected static PrivateKey toPrivateKey(InputStream keyInputStream, String keyPassword)
+                                                                throws NoSuchAlgorithmException,
                                                                 NoSuchPaddingException, InvalidKeySpecException,
                                                                 InvalidAlgorithmParameterException,
                                                                 KeyException, IOException {
         if (keyInputStream == null) {
             return null;
         }
+
+        // try BC first, if this fail fallback to original key extraction process
+        if (BouncyCastleUtil.isBcPkixAvailable()) {
+            if (!keyInputStream.markSupported()) {
+                // We need an input stream that supports resetting, in case BouncyCastle fails to read.
+                keyInputStream = new BufferedInputStream(keyInputStream);
+            }
+            keyInputStream.mark(1048576); // Be able to reset up to 1 MiB of data.
+            PrivateKey pk = BouncyCastlePemReader.getPrivateKey(keyInputStream, keyPassword);
+            if (pk != null) {
+                return pk;
+            }
+            // BouncyCastle could not read the key. Reset the input stream in case the input position changed.
+            keyInputStream.reset();
+        }
+
         return getPrivateKeyFromByteBuffer(PemReader.readPrivateKey(keyInputStream), keyPassword);
     }
 
@@ -1157,7 +1275,7 @@ public abstract class SslContext {
     protected static TrustManagerFactory buildTrustManagerFactory(
             File certChainFile, TrustManagerFactory trustManagerFactory)
             throws NoSuchAlgorithmException, CertificateException, KeyStoreException, IOException {
-        return buildTrustManagerFactory(certChainFile, trustManagerFactory, KeyStore.getDefaultType());
+        return buildTrustManagerFactory(certChainFile, trustManagerFactory, null);
     }
 
     /**
@@ -1167,7 +1285,7 @@ public abstract class SslContext {
      * @param keyType The KeyStore Type you want to use
      * @return A {@link TrustManagerFactory} which contains the certificates in {@code certChainFile}
      */
-    static TrustManagerFactory buildTrustManagerFactory(
+    protected static TrustManagerFactory buildTrustManagerFactory(
             File certChainFile, TrustManagerFactory trustManagerFactory, String keyType)
             throws NoSuchAlgorithmException, CertificateException, KeyStoreException, IOException {
         X509Certificate[] x509Certs = toX509Certificates(certChainFile);
@@ -1175,14 +1293,14 @@ public abstract class SslContext {
         return buildTrustManagerFactory(x509Certs, trustManagerFactory, keyType);
     }
 
-    static X509Certificate[] toX509Certificates(File file) throws CertificateException {
+    protected static X509Certificate[] toX509Certificates(File file) throws CertificateException {
         if (file == null) {
             return null;
         }
         return getCertificatesFromBuffers(PemReader.readCertificates(file));
     }
 
-    static X509Certificate[] toX509Certificates(InputStream in) throws CertificateException {
+    protected static X509Certificate[] toX509Certificates(InputStream in) throws CertificateException {
         if (in == null) {
             return null;
         }
@@ -1215,7 +1333,7 @@ public abstract class SslContext {
         return x509Certs;
     }
 
-    static TrustManagerFactory buildTrustManagerFactory(
+    protected static TrustManagerFactory buildTrustManagerFactory(
             X509Certificate[] certCollection, TrustManagerFactory trustManagerFactory, String keyStoreType)
             throws NoSuchAlgorithmException, CertificateException, KeyStoreException, IOException {
         if (keyStoreType == null) {
@@ -1256,32 +1374,17 @@ public abstract class SslContext {
         }
     }
 
-    static KeyManagerFactory buildKeyManagerFactory(X509Certificate[] certChain, PrivateKey key, String keyPassword,
-                                                    KeyManagerFactory kmf, String keyStoreType)
-            throws UnrecoverableKeyException, KeyStoreException, NoSuchAlgorithmException,
-            CertificateException, IOException {
-        return buildKeyManagerFactory(certChain, KeyManagerFactory.getDefaultAlgorithm(), key,
-                keyPassword, kmf, keyStoreType);
-    }
-
-    static KeyManagerFactory buildKeyManagerFactory(X509Certificate[] certChainFile,
+    protected static KeyManagerFactory buildKeyManagerFactory(X509Certificate[] certChainFile,
                                                     String keyAlgorithm, PrivateKey key,
                                                     String keyPassword, KeyManagerFactory kmf,
                                                     String keyStore)
             throws KeyStoreException, NoSuchAlgorithmException, IOException,
             CertificateException, UnrecoverableKeyException {
+        if (keyAlgorithm == null) {
+            keyAlgorithm = KeyManagerFactory.getDefaultAlgorithm();
+        }
         char[] keyPasswordChars = keyStorePassword(keyPassword);
         KeyStore ks = buildKeyStore(certChainFile, key, keyPasswordChars, keyStore);
-        return buildKeyManagerFactory(ks, keyAlgorithm, keyPasswordChars, kmf);
-    }
-
-    static KeyManagerFactory buildKeyManagerFactory(X509Certificate[] certChainFile,
-                                                    String keyAlgorithm, PrivateKey key,
-                                                    String keyPassword, KeyManagerFactory kmf)
-            throws KeyStoreException, NoSuchAlgorithmException, IOException,
-            CertificateException, UnrecoverableKeyException {
-        char[] keyPasswordChars = keyStorePassword(keyPassword);
-        KeyStore ks = buildKeyStore(certChainFile, key, keyPasswordChars, KeyStore.getDefaultType());
         return buildKeyManagerFactory(ks, keyAlgorithm, keyPasswordChars, kmf);
     }
 
@@ -1291,6 +1394,9 @@ public abstract class SslContext {
             throws KeyStoreException, NoSuchAlgorithmException, UnrecoverableKeyException {
         // Set up key manager factory to use our key store
         if (kmf == null) {
+            if (keyAlgorithm == null) {
+                keyAlgorithm = KeyManagerFactory.getDefaultAlgorithm();
+            }
             kmf = KeyManagerFactory.getInstance(keyAlgorithm);
         }
         kmf.init(ks, keyPasswordChars);
@@ -1300,5 +1406,79 @@ public abstract class SslContext {
 
     static char[] keyStorePassword(String keyPassword) {
         return keyPassword == null ? EmptyArrays.EMPTY_CHARS : keyPassword.toCharArray();
+    }
+
+    /**
+     * Derives the {@code session_id_context} for a server context from the material that determines which clients
+     * it accepts: the {@link ClientAuth} mode, the certificate chain it presents and the certificates it trusts.
+     * <p>
+     * The {@code session_id_context} scopes session resumption: a session (and therefore its client-authentication
+     * state) can only be resumed by a context that uses the same {@code session_id_context}. It must hence differ
+     * between contexts which, when sharing a session cache or session-ticket keys, must not accept each others
+     * sessions (for example because they use a different {@link ClientAuth} mode or trust configuration), but it
+     * should be the same for contexts that are configured identically (for example on different nodes of a cluster
+     * that share session-ticket keys), so resumption keeps working between them.
+     * See <a href="https://www.openssl.org/docs/man1.1.1/man3/SSL_CTX_set_session_id_context.html">
+     * SSL_CTX_set_session_id_context</a> and
+     * <a href="https://github.com/netty/netty/security/advisories/GHSA-6xv6-9mgg-mfvc">GHSA-6xv6-9mgg-mfvc</a>.
+     *
+     * @param clientAuth         the {@link ClientAuth} mode of the context.
+     * @param keyCertChain       the certificate chain the context presents, or {@code null} if unknown.
+     * @param trustCertCollection the certificates the context trusts, or {@code null} if it uses the default.
+     * @param opaque             {@code true} if parts of the configuration (like a custom
+     *                           {@link TrustManagerFactory}) can not be digested. As we then can not tell if two
+     *                           contexts behave the same, a random salt is mixed in so the result is unique to the
+     *                           context.
+     * @return                   at most 32 bytes that are suitable to be used as {@code session_id_context}.
+     */
+    @UnstableApi
+    protected static byte[] deriveSessionIdContext(ClientAuth clientAuth, X509Certificate[] keyCertChain,
+                                                   X509Certificate[] trustCertCollection, boolean opaque) {
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            // Every Java implementation is required to support SHA-256.
+            throw new IllegalStateException(e);
+        }
+        updateDigest(digest, SESSION_ID_CONTEXT_DOMAIN_SEPARATOR.getBytes(CharsetUtil.US_ASCII));
+        updateDigest(digest, clientAuth.name().getBytes(CharsetUtil.US_ASCII));
+        boolean salted = opaque;
+        try {
+            updateDigest(digest, keyCertChain);
+            updateDigest(digest, trustCertCollection);
+        } catch (CertificateEncodingException e) {
+            salted = true;
+        }
+        if (salted) {
+            byte[] salt = new byte[SESSION_ID_CONTEXT_SALT_LENGTH];
+            SESSION_ID_CONTEXT_SALT_GENERATOR.nextBytes(salt);
+            updateDigest(digest, salt);
+        } else {
+            updateDigest(digest, EmptyArrays.EMPTY_BYTES);
+        }
+        return digest.digest();
+    }
+
+    private static void updateDigest(MessageDigest digest, X509Certificate[] certificates)
+            throws CertificateEncodingException {
+        if (certificates == null) {
+            updateDigest(digest, -1);
+            return;
+        }
+        updateDigest(digest, certificates.length);
+        for (X509Certificate certificate : certificates) {
+            updateDigest(digest, certificate.getEncoded());
+        }
+    }
+
+    // Every field is prefixed with its length so different inputs can never produce the same byte sequence.
+    private static void updateDigest(MessageDigest digest, byte[] bytes) {
+        updateDigest(digest, bytes.length);
+        digest.update(bytes);
+    }
+
+    private static void updateDigest(MessageDigest digest, int value) {
+        digest.update(ByteBuffer.allocate(4).putInt(value).array());
     }
 }

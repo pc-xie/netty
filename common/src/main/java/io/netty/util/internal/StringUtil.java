@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,7 +17,6 @@ package io.netty.util.internal;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
@@ -38,10 +37,6 @@ public final class StringUtil {
     public static final char TAB = '\t';
     public static final char SPACE = 0x20;
 
-    private static final String[] BYTE2HEX_PAD = new String[256];
-    private static final String[] BYTE2HEX_NOPAD = new String[256];
-    private static final byte[] HEX2B;
-
     /**
      * 2 - Quote character at beginning and end.
      * 5 - Extra allowance for anticipated escape characters that may be added.
@@ -49,40 +44,61 @@ public final class StringUtil {
     private static final int CSV_NUMBER_ESCAPE_CHARACTERS = 2 + 5;
     private static final char PACKAGE_SEPARATOR_CHAR = '.';
 
-    static {
-        // Generate the lookup table that converts a byte into a 2-digit hexadecimal integer.
-        for (int i = 0; i < BYTE2HEX_PAD.length; i++) {
-            String str = Integer.toHexString(i);
-            BYTE2HEX_PAD[i] = i > 0xf ? str : ('0' + str);
-            BYTE2HEX_NOPAD[i] = str;
+    /**
+     * Lazily initialized byte to hexadecimal string tables. {@link StringUtil} is loaded very early by most Netty
+     * applications, through {@link #simpleClassName(Class)} and friends, while these tables are only needed for hex
+     * dumps, so they are kept in a holder to not pay for the 512 strings at startup.
+     */
+    private static final class Byte2Hex {
+        static final String[] PAD = new String[256];
+        static final String[] NOPAD = new String[256];
+
+        static {
+            // Generate the lookup table that converts a byte into a 2-digit hexadecimal integer.
+            for (int i = 0; i < PAD.length; i++) {
+                String str = Integer.toHexString(i);
+                PAD[i] = i > 0xf ? str : ('0' + str);
+                NOPAD[i] = str;
+            }
         }
-        // Generate the lookup table that converts an hex char into its decimal value:
+    }
+
+    /**
+     * Lazily initialized hexadecimal digit to value table, kept separate from {@link Byte2Hex} so that decoding
+     * (used for instance to parse the machine id) does not pay for the byte to string tables.
+     * <p>
+     * The table stores {@code value + 1}: a zero entry means "not a hex digit", so the zero-filled array needs no
+     * {@code Arrays.fill} pass over its 64 KiB, which is costly when run by the interpreter at startup.
+     */
+    private static final class Hex2B {
         // the size of the table is such that the JVM is capable of save any bounds-check
         // if a char type is used as an index.
-        HEX2B = new byte[Character.MAX_VALUE + 1];
-        Arrays.fill(HEX2B, (byte) -1);
-        HEX2B['0'] = (byte) 0;
-        HEX2B['1'] = (byte) 1;
-        HEX2B['2'] = (byte) 2;
-        HEX2B['3'] = (byte) 3;
-        HEX2B['4'] = (byte) 4;
-        HEX2B['5'] = (byte) 5;
-        HEX2B['6'] = (byte) 6;
-        HEX2B['7'] = (byte) 7;
-        HEX2B['8'] = (byte) 8;
-        HEX2B['9'] = (byte) 9;
-        HEX2B['A'] = (byte) 10;
-        HEX2B['B'] = (byte) 11;
-        HEX2B['C'] = (byte) 12;
-        HEX2B['D'] = (byte) 13;
-        HEX2B['E'] = (byte) 14;
-        HEX2B['F'] = (byte) 15;
-        HEX2B['a'] = (byte) 10;
-        HEX2B['b'] = (byte) 11;
-        HEX2B['c'] = (byte) 12;
-        HEX2B['d'] = (byte) 13;
-        HEX2B['e'] = (byte) 14;
-        HEX2B['f'] = (byte) 15;
+        static final byte[] TABLE = new byte[Character.MAX_VALUE + 1];
+
+        static {
+            TABLE['0'] = 1;
+            TABLE['1'] = 2;
+            TABLE['2'] = 3;
+            TABLE['3'] = 4;
+            TABLE['4'] = 5;
+            TABLE['5'] = 6;
+            TABLE['6'] = 7;
+            TABLE['7'] = 8;
+            TABLE['8'] = 9;
+            TABLE['9'] = 10;
+            TABLE['A'] = 11;
+            TABLE['B'] = 12;
+            TABLE['C'] = 13;
+            TABLE['D'] = 14;
+            TABLE['E'] = 15;
+            TABLE['F'] = 16;
+            TABLE['a'] = 11;
+            TABLE['b'] = 12;
+            TABLE['c'] = 13;
+            TABLE['d'] = 14;
+            TABLE['e'] = 15;
+            TABLE['f'] = 16;
+        }
     }
 
     private StringUtil() {
@@ -103,6 +119,19 @@ public final class StringUtil {
     }
 
     /**
+     * Get the item before one char delim if the delim is found (else null).
+     * This operation is a simplified and optimized
+     * version of {@link String#split(String, int)}.
+     */
+    public static String substringBefore(String value, char delim) {
+        int pos = value.indexOf(delim);
+        if (pos >= 0) {
+            return value.substring(0, pos);
+        }
+        return null;
+    }
+
+    /**
      * Checks if two strings have the same suffix of specified length
      *
      * @param s   string
@@ -118,7 +147,7 @@ public final class StringUtil {
      * Converts the specified byte value into a 2-digit hexadecimal integer.
      */
     public static String byteToHexStringPadded(int value) {
-        return BYTE2HEX_PAD[value & 0xff];
+        return Byte2Hex.PAD[value & 0xff];
     }
 
     /**
@@ -169,7 +198,7 @@ public final class StringUtil {
      * Converts the specified byte value into a hexadecimal integer.
      */
     public static String byteToHexString(int value) {
-        return BYTE2HEX_NOPAD[value & 0xff];
+        return Byte2Hex.NOPAD[value & 0xff];
     }
 
     /**
@@ -240,11 +269,22 @@ public final class StringUtil {
      * given, or {@code -1} if the character is invalid.
      */
     public static int decodeHexNibble(final char c) {
-        assert HEX2B.length == (Character.MAX_VALUE + 1);
         // Character.digit() is not used here, as it addresses a larger
         // set of characters (both ASCII and full-width latin letters).
-        final int index = c;
-        return HEX2B[index];
+        return Hex2B.TABLE[c] - 1;
+    }
+
+    /**
+     * Helper to decode half of a hexadecimal number from a string.
+     * @param b The ASCII character of the hexadecimal number to decode.
+     * Must be in the range {@code [0-9a-fA-F]}.
+     * @return The hexadecimal value represented in the ASCII character
+     * given, or {@code -1} if the character is invalid.
+     */
+    public static int decodeHexNibble(final byte b) {
+        // Character.digit() is not used here, as it addresses a larger
+        // set of characters (both ASCII and full-width latin letters).
+        return Hex2B.TABLE[b & 0xFF] - 1;
     }
 
     /**
@@ -261,7 +301,7 @@ public final class StringUtil {
     }
 
     /**
-     * Decodes part of a string with <a href="http://en.wikipedia.org/wiki/Hex_dump">hex dump</a>
+     * Decodes part of a string with <a href="https://en.wikipedia.org/wiki/Hex_dump">hex dump</a>
      *
      * @param hexDump a {@link CharSequence} which contains the hex dump
      * @param fromIndex start of hex dump in {@code hexDump}
@@ -282,7 +322,7 @@ public final class StringUtil {
     }
 
     /**
-     * Decodes a <a href="http://en.wikipedia.org/wiki/Hex_dump">hex dump</a>
+     * Decodes a <a href="https://en.wikipedia.org/wiki/Hex_dump">hex dump</a>
      */
     public static byte[] decodeHexDump(CharSequence hexDump) {
         return decodeHexDump(hexDump, 0, hexDump.length());
@@ -593,11 +633,11 @@ public final class StringUtil {
 
     /**
      * Determine if {@code c} lies within the range of values defined for
-     * <a href="http://unicode.org/glossary/#surrogate_code_point">Surrogate Code Point</a>.
+     * <a href="https://unicode.org/glossary/#surrogate_code_point">Surrogate Code Point</a>.
      *
      * @param c the character to check.
      * @return {@code true} if {@code c} lies within the range of values defined for
-     * <a href="http://unicode.org/glossary/#surrogate_code_point">Surrogate Code Point</a>. {@code false} otherwise.
+     * <a href="https://unicode.org/glossary/#surrogate_code_point">Surrogate Code Point</a>. {@code false} otherwise.
      */
     public static boolean isSurrogate(char c) {
         return c >= '\uD800' && c <= '\uDFFF';

@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -19,14 +19,14 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.CharsetUtil;
 import io.netty.util.ReferenceCountUtil;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for {@link CoalescingBufferQueue}.
@@ -46,7 +46,7 @@ public class CoalescingBufferQueueTest {
     private EmbeddedChannel channel;
     private CoalescingBufferQueue writeQueue;
 
-    @Before
+    @BeforeEach
     public void setup() {
         mouseDone = false;
         mouseSuccess = false;
@@ -67,7 +67,7 @@ public class CoalescingBufferQueueTest {
         mouse = Unpooled.wrappedBuffer("mouse".getBytes(CharsetUtil.US_ASCII));
     }
 
-    @After
+    @AfterEach
     public void finish() {
         assertFalse(channel.finish());
     }
@@ -234,6 +234,93 @@ public class CoalescingBufferQueueTest {
         assertTrue(emptyPromise.isSuccess());
         assertEquals(0, cat.refCnt());
         assertEquals(0, empty.refCnt());
+    }
+
+    // If a queued buffer's readable bytes shrink after enqueue (released or consumed out from under the queue),
+    // the queue must still report 0 readable bytes once drained.
+    // See https://github.com/netty/netty/issues/16946
+    @Test
+    public void testReadableBytesResetWhenQueuedBufferConsumedExternally() {
+        // Not used in this test.
+        cat.release();
+        mouse.release();
+
+        ByteBuf buffer = Unpooled.buffer().writeZero(292);
+        writeQueue.add(buffer);
+        assertEquals(292, writeQueue.readableBytes());
+
+        // Consume the buffer out from under the queue (e.g. a pooled buffer released and reused).
+        buffer.skipBytes(buffer.readableBytes());
+
+        ByteBuf removed = writeQueue.remove(Integer.MAX_VALUE, newPromise());
+        assertFalse(removed.isReadable());
+        removed.release();
+        assertQueueSize(0, true);
+
+        // A subsequent remove must not resurrect phantom readable bytes.
+        ByteBuf removedAgain = writeQueue.remove(Integer.MAX_VALUE, newPromise());
+        assertFalse(removedAgain.isReadable());
+        removedAgain.release();
+        assertQueueSize(0, true);
+    }
+
+    @Test
+    public void testReadableBytesResetWhenReleaseAndFailAllSeesConsumedBuffer() {
+        cat.release();
+        mouse.release();
+
+        ByteBuf buffer = Unpooled.buffer().writeZero(292);
+        writeQueue.add(buffer);
+        assertEquals(292, writeQueue.readableBytes());
+
+        buffer.skipBytes(buffer.readableBytes());
+        writeQueue.releaseAndFailAll(new RuntimeException());
+
+        assertQueueSize(0, true);
+        assertEquals(0, buffer.refCnt());
+    }
+
+    @Test
+    public void testReadableBytesResetWhenWriteAndRemoveAllSeesConsumedBuffer() {
+        cat.release();
+        mouse.release();
+
+        EmbeddedChannel ch = new EmbeddedChannel(new ChannelOutboundHandlerAdapter() {
+            @Override
+            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                ReferenceCountUtil.release(msg);
+                promise.setSuccess();
+            }
+        }, new ChannelHandlerAdapter() { });
+        CoalescingBufferQueue queue = new CoalescingBufferQueue(ch);
+
+        ByteBuf buffer = Unpooled.buffer().writeZero(292);
+        queue.add(buffer);
+        assertEquals(292, queue.readableBytes());
+
+        buffer.skipBytes(buffer.readableBytes());
+        queue.writeAndRemoveAll(ch.pipeline().lastContext());
+
+        assertTrue(queue.isEmpty());
+        assertEquals(0, queue.readableBytes());
+        assertFalse(ch.finish());
+    }
+
+    @Test
+    public void testReadableBytesResetWhenRemoveFirstSeesConsumedBuffer() {
+        cat.release();
+        mouse.release();
+
+        ByteBuf buffer = Unpooled.buffer().writeZero(292);
+        writeQueue.add(buffer);
+        assertEquals(292, writeQueue.readableBytes());
+
+        buffer.skipBytes(buffer.readableBytes());
+        ByteBuf removed = writeQueue.removeFirst(newPromise());
+        assertSame(buffer, removed);
+        removed.release();
+
+        assertQueueSize(0, true);
     }
 
     @Test

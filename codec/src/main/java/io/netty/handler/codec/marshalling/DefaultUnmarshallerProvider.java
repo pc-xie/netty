@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -25,6 +25,10 @@ import org.jboss.marshalling.Unmarshaller;
  * Default implementation of {@link UnmarshallerProvider} which will just create a new {@link Unmarshaller}
  * on every call to {@link #getUnmarshaller(ChannelHandlerContext)}
  *
+ * <strong>Security:</strong> serialization can be a security liability,
+ * and should not be used without defining a list of classes that are
+ * allowed to be deserialized. This explicitly needs to be done via {@link MarshallingConfiguration},
+ * missing to do so is a security risk.
  */
 public class DefaultUnmarshallerProvider implements UnmarshallerProvider {
 

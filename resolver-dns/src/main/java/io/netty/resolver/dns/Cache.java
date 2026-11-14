@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,6 +16,8 @@
 package io.netty.resolver.dns;
 
 import io.netty.channel.EventLoop;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.FutureListener;
 import io.netty.util.internal.PlatformDependent;
 
 import java.util.ArrayList;
@@ -134,7 +136,7 @@ abstract class Cache<E> {
     }
 
     /**
-     * Return the number of hostames for which we have cached something.
+     * Return the number of hostnames for which we have cached something.
      */
     final int size() {
         return resolveCache.size();
@@ -159,7 +161,7 @@ abstract class Cache<E> {
     protected abstract boolean equals(E entry, E otherEntry);
 
     // Directly extend AtomicReference for intrinsics and also to keep memory overhead low.
-    private final class Entries extends AtomicReference<List<E>> implements Runnable {
+    private final class Entries extends AtomicReference<List<E>> implements Runnable, FutureListener<Object> {
 
         private final String hostname;
         // Needs to be package-private to be able to access it via the AtomicReferenceFieldUpdater
@@ -237,7 +239,7 @@ abstract class Cache<E> {
                 // we can reconsider.
                 ScheduledFuture<?> oldFuture = FUTURE_UPDATER.get(this);
                 if (oldFuture == null || oldFuture.getDelay(TimeUnit.SECONDS) > ttl) {
-                    ScheduledFuture<?> newFuture = loop.schedule(this, ttl, TimeUnit.SECONDS);
+                    io.netty.util.concurrent.ScheduledFuture<?> newFuture = loop.schedule(this, ttl, TimeUnit.SECONDS);
                     // It is possible that
                     // 1. task will fire in between this line, or
                     // 2. multiple timers may be set if there is concurrency
@@ -245,6 +247,11 @@ abstract class Cache<E> {
                     //     so the ttl will not be less, and we will bail out of the loop.
                     // (2) This is a trade-off to avoid concurrency resulting in contention on a synchronized block.
                     if (FUTURE_UPDATER.compareAndSet(this, oldFuture, newFuture)) {
+                        if (!newFuture.isDone()) {
+                            newFuture.addListener(this);
+                        }
+                        // The loop may have terminated before the listener was registered.
+                        removeIfCancelled(newFuture);
                         if (oldFuture != null) {
                             oldFuture.cancel(true);
                         }
@@ -256,6 +263,18 @@ abstract class Cache<E> {
                 } else {
                     break;
                 }
+            }
+        }
+
+        @Override
+        public void operationComplete(Future<Object> future) {
+            removeIfCancelled((ScheduledFuture<?>) future);
+        }
+
+        private void removeIfCancelled(ScheduledFuture<?> future) {
+            // Only evict if this is still the active timer, not one cancelled when shortening the TTL.
+            if (future.isCancelled() && FUTURE_UPDATER.compareAndSet(this, future, CANCELLED)) {
+                run();
             }
         }
 

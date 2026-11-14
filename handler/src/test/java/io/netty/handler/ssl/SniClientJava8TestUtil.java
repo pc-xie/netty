@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -27,6 +27,7 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
 import io.netty.channel.local.LocalServerChannel;
+import io.netty.handler.ssl.util.CachedSelfSignedCertificate;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.ssl.util.SimpleTrustManagerFactory;
@@ -34,7 +35,7 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.ThrowableUtil;
-import org.junit.Assert;
+import org.mockito.Mockito;
 
 import javax.net.ssl.ExtendedSSLSession;
 import javax.net.ssl.KeyManager;
@@ -64,8 +65,14 @@ import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * In extra class to be able to run tests with java7 without trying to load classes that not exists in java7.
@@ -77,8 +84,8 @@ final class SniClientJava8TestUtil {
     static void testSniClient(SslProvider sslClientProvider, SslProvider sslServerProvider, final boolean match)
             throws Exception {
         final String sniHost = "sni.netty.io";
-        SelfSignedCertificate cert = new SelfSignedCertificate();
-        LocalAddress address = new LocalAddress("test");
+        SelfSignedCertificate cert = CachedSelfSignedCertificate.getCachedCertificate();
+        LocalAddress address = new LocalAddress(SniClientJava8TestUtil.class);
         EventLoopGroup group = new DefaultEventLoopGroup(1);
         SslContext sslServerContext = null;
         SslContext sslClientContext = null;
@@ -160,8 +167,6 @@ final class SniClientJava8TestUtil {
             ReferenceCountUtil.release(sslServerContext);
             ReferenceCountUtil.release(sslClientContext);
 
-            cert.delete();
-
             group.shutdownGracefully();
         }
     }
@@ -171,17 +176,17 @@ final class SniClientJava8TestUtil {
     }
 
     private static void assertSSLSession(boolean clientSide, SSLSession session, SNIServerName name) {
-        Assert.assertNotNull(session);
+        assertNotNull(session);
         if (session instanceof ExtendedSSLSession) {
             ExtendedSSLSession extendedSSLSession = (ExtendedSSLSession) session;
             List<SNIServerName> names = extendedSSLSession.getRequestedServerNames();
-            Assert.assertEquals(1, names.size());
-            Assert.assertEquals(name, names.get(0));
-            Assert.assertTrue(extendedSSLSession.getLocalSupportedSignatureAlgorithms().length > 0);
+            assertEquals(1, names.size());
+            assertEquals(name, names.get(0));
+            assertTrue(extendedSSLSession.getLocalSupportedSignatureAlgorithms().length > 0);
             if (clientSide) {
-                Assert.assertEquals(0, extendedSSLSession.getPeerSupportedSignatureAlgorithms().length);
+                assertEquals(0, extendedSSLSession.getPeerSupportedSignatureAlgorithms().length);
             } else {
-                Assert.assertTrue(extendedSSLSession.getPeerSupportedSignatureAlgorithms().length >= 0);
+                assertTrue(extendedSSLSession.getPeerSupportedSignatureAlgorithms().length >= 0);
             }
         }
     }
@@ -214,19 +219,19 @@ final class SniClientJava8TestUtil {
                 @Override
                 public void checkClientTrusted(X509Certificate[] x509Certificates, String s, Socket socket)
                         throws CertificateException {
-                    Assert.fail();
+                    fail();
                 }
 
                 @Override
                 public void checkServerTrusted(X509Certificate[] x509Certificates, String s, Socket socket)
                         throws CertificateException {
-                    Assert.fail();
+                    fail();
                 }
 
                 @Override
                 public void checkClientTrusted(X509Certificate[] x509Certificates, String s, SSLEngine sslEngine)
                         throws CertificateException {
-                    Assert.fail();
+                    fail();
                 }
 
                 @Override
@@ -238,13 +243,13 @@ final class SniClientJava8TestUtil {
                 @Override
                 public void checkClientTrusted(X509Certificate[] x509Certificates, String s)
                         throws CertificateException {
-                    Assert.fail();
+                    fail();
                 }
 
                 @Override
                 public void checkServerTrusted(X509Certificate[] x509Certificates, String s)
                         throws CertificateException {
-                    Assert.fail();
+                    fail();
                 }
 
                 @Override
@@ -260,7 +265,7 @@ final class SniClientJava8TestUtil {
                    IOException, CertificateException {
         return new SniX509KeyManagerFactory(
                 new SNIHostName(hostname), SslContext.buildKeyManagerFactory(
-                new X509Certificate[] { cert.cert() }, cert.key(), null, null, null));
+                new X509Certificate[] { cert.cert() }, null,  cert.key(), null, null, null));
     }
 
     private static final class SniX509KeyManagerFactory extends KeyManagerFactory {
@@ -341,5 +346,13 @@ final class SniClientJava8TestUtil {
                 }
             }, factory.getProvider(), factory.getAlgorithm());
         }
+    }
+
+    static SSLSession mockSSLSessionWithSNIHostNameAndPeerHost(String hostname) {
+        ExtendedSSLSession session = Mockito.mock(ExtendedSSLSession.class);
+        SNIServerName sniName = new SNIHostName(hostname);
+        Mockito.when(session.getRequestedServerNames()).thenReturn(Arrays.asList(sniName));
+        Mockito.when(session.getPeerHost()).thenReturn(hostname);
+        return session;
     }
 }

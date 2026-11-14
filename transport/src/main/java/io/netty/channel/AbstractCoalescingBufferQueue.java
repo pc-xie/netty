@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -58,6 +58,9 @@ public abstract class AbstractCoalescingBufferQueue {
     }
 
     private void addFirst(ByteBuf buf, ChannelFutureListener listener) {
+        // Touch the message to make it easier to debug buffer leaks.
+        buf.touch();
+
         if (listener != null) {
             bufAndListenerPairs.addFirst(listener);
         }
@@ -91,6 +94,9 @@ public abstract class AbstractCoalescingBufferQueue {
      * @param listener to notify when all the bytes have been consumed and written, can be {@code null}.
      */
     public final void add(ByteBuf buf, ChannelFutureListener listener) {
+        // Touch the message to make it easier to debug buffer leaks.
+        buf.touch();
+
         // buffers are added before promises so that we naturally 'consume' the entire buffer during removal
         // before we complete it's promise.
         bufAndListenerPairs.add(buf);
@@ -120,6 +126,7 @@ public abstract class AbstractCoalescingBufferQueue {
             aggregatePromise.addListener((ChannelFutureListener) entry);
             bufAndListenerPairs.poll();
         }
+        reconcileReadableBytes();
         return result;
     }
 
@@ -140,6 +147,7 @@ public abstract class AbstractCoalescingBufferQueue {
 
         // Use isEmpty rather than readableBytes==0 as we may have a promise associated with an empty buffer.
         if (bufAndListenerPairs.isEmpty()) {
+            reconcileReadableBytes();
             return removeEmptyValue();
         }
         bytes = Math.min(bytes, readableBytes);
@@ -147,42 +155,68 @@ public abstract class AbstractCoalescingBufferQueue {
         ByteBuf toReturn = null;
         ByteBuf entryBuffer = null;
         int originalBytes = bytes;
+        Object entry = null;
         try {
             for (;;) {
-                Object entry = bufAndListenerPairs.poll();
+                entry = bufAndListenerPairs.poll();
                 if (entry == null) {
                     break;
                 }
-                if (entry instanceof ChannelFutureListener) {
-                    aggregatePromise.addListener((ChannelFutureListener) entry);
-                    continue;
-                }
-                entryBuffer = (ByteBuf) entry;
-                if (entryBuffer.readableBytes() > bytes) {
-                    // Add the buffer back to the queue as we can't consume all of it.
-                    bufAndListenerPairs.addFirst(entryBuffer);
-                    if (bytes > 0) {
-                        // Take a slice of what we can consume and retain it.
-                        entryBuffer = entryBuffer.readRetainedSlice(bytes);
-                        toReturn = toReturn == null ? composeFirst(alloc, entryBuffer)
-                                                    : compose(alloc, toReturn, entryBuffer);
-                        bytes = 0;
+                // fast-path vs abstract type
+                if (entry instanceof ByteBuf) {
+                    entryBuffer = (ByteBuf) entry;
+                    int bufferBytes = entryBuffer.readableBytes();
+
+                    if (bufferBytes > bytes) {
+                        // Add the buffer back to the queue as we can't consume all of it.
+                        bufAndListenerPairs.addFirst(entryBuffer);
+                        if (bytes > 0) {
+                            // Take a slice of what we can consume and retain it.
+                            entryBuffer = entryBuffer.readRetainedSlice(bytes);
+                            // we end here, so if this is the only buffer to return, skip composing
+                            toReturn = toReturn == null ? entryBuffer
+                                    : compose(alloc, toReturn, entryBuffer);
+                            bytes = 0;
+                        }
+                        break;
                     }
-                    break;
-                } else {
-                    bytes -= entryBuffer.readableBytes();
-                    toReturn = toReturn == null ? composeFirst(alloc, entryBuffer)
-                                                : compose(alloc, toReturn, entryBuffer);
+
+                    bytes -= bufferBytes;
+                    if (toReturn == null) {
+                        // if there are no more bytes to read, there's no reason to compose
+                        toReturn = bytes == 0
+                                ? entryBuffer
+                                : composeFirst(alloc, entryBuffer, bufferBytes + bytes);
+                    } else {
+                        toReturn = compose(alloc, toReturn, entryBuffer);
+                    }
+                    entryBuffer = null;
+                } else if (entry instanceof DelegatingChannelPromiseNotifier) {
+                    aggregatePromise.addListener((DelegatingChannelPromiseNotifier) entry);
+                } else if (entry instanceof ChannelFutureListener) {
+                    aggregatePromise.addListener((ChannelFutureListener) entry);
                 }
-                entryBuffer = null;
             }
         } catch (Throwable cause) {
+            // Always decrement to keep things consistent. We decrement directly here and not in a finally-block
+            // to ensure that the state is consistent even if it would be accessed via a listener that is
+            // attached to the promise that we fail below.
+            decrementReadableBytes(originalBytes - bytes);
+
+            // Poll the next element if it's a listener that belongs to the ByteBuf.
+            entry = bufAndListenerPairs.peek();
+            if (entry instanceof ChannelFutureListener) {
+                aggregatePromise.addListener((ChannelFutureListener) entry);
+                bufAndListenerPairs.poll();
+            }
+
             safeRelease(entryBuffer);
             safeRelease(toReturn);
             aggregatePromise.setFailure(cause);
             throwException(cause);
         }
         decrementReadableBytes(originalBytes - bytes);
+        reconcileReadableBytes();
         return toReturn;
     }
 
@@ -221,7 +255,6 @@ public abstract class AbstractCoalescingBufferQueue {
      * @param ctx The context to write all elements to.
      */
     public final void writeAndRemoveAll(ChannelHandlerContext ctx) {
-        decrementReadableBytes(readableBytes);
         Throwable pending = null;
         ByteBuf previousBuf = null;
         for (;;) {
@@ -229,6 +262,7 @@ public abstract class AbstractCoalescingBufferQueue {
             try {
                 if (entry == null) {
                     if (previousBuf != null) {
+                        decrementReadableBytes(previousBuf.readableBytes());
                         ctx.write(previousBuf, ctx.voidPromise());
                     }
                     break;
@@ -236,13 +270,16 @@ public abstract class AbstractCoalescingBufferQueue {
 
                 if (entry instanceof ByteBuf) {
                     if (previousBuf != null) {
+                        decrementReadableBytes(previousBuf.readableBytes());
                         ctx.write(previousBuf, ctx.voidPromise());
                     }
                     previousBuf = (ByteBuf) entry;
                 } else if (entry instanceof ChannelPromise) {
+                    decrementReadableBytes(previousBuf.readableBytes());
                     ctx.write(previousBuf, (ChannelPromise) entry);
                     previousBuf = null;
                 } else {
+                    decrementReadableBytes(previousBuf.readableBytes());
                     ctx.write(previousBuf).addListener((ChannelFutureListener) entry);
                     previousBuf = null;
                 }
@@ -254,9 +291,15 @@ public abstract class AbstractCoalescingBufferQueue {
                 }
             }
         }
+        reconcileReadableBytes();
         if (pending != null) {
             throw new IllegalStateException(pending);
         }
+    }
+
+    @Override
+    public String toString() {
+        return "bytes: " + readableBytes + " buffers: " + (size() >> 1);
     }
 
     /**
@@ -306,7 +349,21 @@ public abstract class AbstractCoalescingBufferQueue {
     /**
      * Calculate the first {@link ByteBuf} which will be used in subsequent calls to
      * {@link #compose(ByteBufAllocator, ByteBuf, ByteBuf)}.
+     * @param bufferSize the optimal size of the buffer needed for cumulation
+     * @return the first buffer
      */
+    protected ByteBuf composeFirst(ByteBufAllocator allocator, ByteBuf first, int bufferSize) {
+        return composeFirst(allocator, first);
+    }
+
+    /**
+     * Calculate the first {@link ByteBuf} which will be used in subsequent calls to
+     * {@link #compose(ByteBufAllocator, ByteBuf, ByteBuf)}.
+     * This method is deprecated and will be removed in the future. Implementing classes should
+     * override {@link #composeFirst(ByteBufAllocator, ByteBuf, int)} instead.
+     * @deprecated Use {AbstractCoalescingBufferQueue#composeFirst(ByteBufAllocator, ByteBuf, int)}
+     */
+    @Deprecated
     protected ByteBuf composeFirst(ByteBufAllocator allocator, ByteBuf first) {
         return first;
     }
@@ -326,7 +383,6 @@ public abstract class AbstractCoalescingBufferQueue {
     }
 
     private void releaseAndCompleteAll(ChannelFuture future) {
-        decrementReadableBytes(readableBytes);
         Throwable pending = null;
         for (;;) {
             Object entry = bufAndListenerPairs.poll();
@@ -335,7 +391,9 @@ public abstract class AbstractCoalescingBufferQueue {
             }
             try {
                 if (entry instanceof ByteBuf) {
-                    safeRelease(entry);
+                    ByteBuf buffer = (ByteBuf) entry;
+                    decrementReadableBytes(buffer.readableBytes());
+                    safeRelease(buffer);
                 } else {
                     ((ChannelFutureListener) entry).operationComplete(future);
                 }
@@ -347,6 +405,7 @@ public abstract class AbstractCoalescingBufferQueue {
                 }
             }
         }
+        reconcileReadableBytes();
         if (pending != null) {
             throw new IllegalStateException(pending);
         }
@@ -368,6 +427,22 @@ public abstract class AbstractCoalescingBufferQueue {
         assert readableBytes >= 0;
         if (tracker != null) {
             tracker.decrementPendingOutboundBytes(decrement);
+        }
+    }
+
+    /**
+     * Resets readableBytes to 0 when the queue is empty. They can only diverge if a queued buffer was released
+     * or consumed while still referenced by the queue (similar to a reference-counting bug) after it was added,
+     * which would otherwise make remove(...) return empty buffers forever. Logged at error level because it
+     * always indicates a bug that needs to be found.
+     * See https://github.com/netty/netty/issues/16946
+     */
+    private void reconcileReadableBytes() {
+        if (readableBytes != 0 && bufAndListenerPairs.isEmpty()) {
+            logger.error("readableBytes is {} but the queue is empty: a queued buffer was released or consumed " +
+                    "while still referenced by the queue. This indicates a bug in the code that produced the " +
+                    "buffer. Resetting readableBytes to 0.", readableBytes);
+            decrementReadableBytes(readableBytes);
         }
     }
 

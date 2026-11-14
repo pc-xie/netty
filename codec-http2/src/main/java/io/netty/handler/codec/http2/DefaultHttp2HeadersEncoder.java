@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -15,19 +15,19 @@
 
 package io.netty.handler.codec.http2;
 
+import java.io.Closeable;
+
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.util.internal.UnstableApi;
 
 import static io.netty.handler.codec.http2.Http2Error.COMPRESSION_ERROR;
 import static io.netty.handler.codec.http2.Http2Exception.connectionError;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
 
-@UnstableApi
-public class DefaultHttp2HeadersEncoder implements Http2HeadersEncoder, Http2HeadersEncoder.Configuration {
+public class DefaultHttp2HeadersEncoder implements
+    Http2HeadersEncoder, Http2HeadersEncoder.Configuration, Closeable {
+
     private final HpackEncoder hpackEncoder;
     private final SensitivityDetector sensitivityDetector;
-    private final ByteBuf tableSizeChangeOutput = Unpooled.buffer();
 
     public DefaultHttp2HeadersEncoder() {
         this(NEVER_SENSITIVE);
@@ -64,13 +64,6 @@ public class DefaultHttp2HeadersEncoder implements Http2HeadersEncoder, Http2Hea
     @Override
     public void encodeHeaders(int streamId, Http2Headers headers, ByteBuf buffer) throws Http2Exception {
         try {
-            // If there was a change in the table size, serialize the output from the hpackEncoder
-            // resulting from that change.
-            if (tableSizeChangeOutput.isReadable()) {
-                buffer.writeBytes(tableSizeChangeOutput);
-                tableSizeChangeOutput.clear();
-            }
-
             hpackEncoder.encodeHeaders(streamId, buffer, headers, sensitivityDetector);
         } catch (Http2Exception e) {
             throw e;
@@ -81,7 +74,7 @@ public class DefaultHttp2HeadersEncoder implements Http2HeadersEncoder, Http2Hea
 
     @Override
     public void maxHeaderTableSize(long max) throws Http2Exception {
-        hpackEncoder.setMaxHeaderTableSize(tableSizeChangeOutput, max);
+        hpackEncoder.setMaxHeaderTableSize(max);
     }
 
     @Override
@@ -102,5 +95,12 @@ public class DefaultHttp2HeadersEncoder implements Http2HeadersEncoder, Http2Hea
     @Override
     public Configuration configuration() {
         return this;
+    }
+
+    /**
+     * Close the encoder and release all its associated data.
+     */
+    @Override
+    public void close() {
     }
 }

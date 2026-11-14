@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,8 +15,12 @@
  */
 package io.netty.handler.traffic;
 
-import io.netty.buffer.ByteBuf;
+import static io.netty.util.internal.ObjectUtil.checkNotNullWithIAE;
+import static io.netty.util.internal.ObjectUtil.checkPositive;
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
+
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelId;
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelHandlerContext;
@@ -27,6 +31,7 @@ import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.nio.channels.ClosedChannelException;
 import java.util.AbstractCollection;
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -90,7 +95,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
     /**
      * All queues per channel
      */
-    final ConcurrentMap<Integer, PerChannel> channelQueues = PlatformDependent.newConcurrentHashMap();
+    final ConcurrentMap<ChannelId, PerChannel> channelQueues = PlatformDependent.newConcurrentHashMap();
 
     /**
      * Global queues size
@@ -147,9 +152,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
     void createGlobalTrafficCounter(ScheduledExecutorService executor) {
         // Default
         setMaxDeviation(DEFAULT_DEVIATION, DEFAULT_SLOWDOWN, DEFAULT_ACCELERATION);
-        if (executor == null) {
-            throw new IllegalArgumentException("Executor must not be null");
-        }
+        checkNotNullWithIAE(executor, "executor");
         TrafficCounter tc = new GlobalChannelTrafficCounter(this, executor, "GlobalChannelTC", checkInterval);
         setTrafficCounter(tc);
         tc.start();
@@ -299,9 +302,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
         if (maxDeviation > MAX_DEVIATION) {
             throw new IllegalArgumentException("maxDeviation must be <= " + MAX_DEVIATION);
         }
-        if (slowDownFactor < 0) {
-            throw new IllegalArgumentException("slowDownFactor must be >= 0");
-        }
+        checkPositiveOrZero(slowDownFactor, "slowDownFactor");
         if (accelerationFactor > 0) {
             throw new IllegalArgumentException("accelerationFactor must be <= 0");
         }
@@ -385,10 +386,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
      *            globally for all channels before write suspended is set.
      */
     public void setMaxGlobalWriteSize(long maxGlobalWriteSize) {
-        if (maxGlobalWriteSize <= 0) {
-            throw new IllegalArgumentException("maxGlobalWriteSize must be positive");
-        }
-        this.maxGlobalWriteSize = maxGlobalWriteSize;
+        this.maxGlobalWriteSize = checkPositive(maxGlobalWriteSize, "maxGlobalWriteSize");
     }
 
     /**
@@ -457,14 +455,14 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
     private PerChannel getOrSetPerChannel(ChannelHandlerContext ctx) {
         // ensure creation is limited to one thread per channel
         Channel channel = ctx.channel();
-        Integer key = channel.hashCode();
+        ChannelId key = channel.id();
         PerChannel perChannel = channelQueues.get(key);
         if (perChannel == null) {
             perChannel = new PerChannel();
             perChannel.messagesQueue = new ArrayDeque<ToSend>();
             // Don't start it since managed through the Global one
             perChannel.channelTrafficCounter = new TrafficCounter(this, null, "ChannelTC" +
-                    ctx.channel().hashCode(), checkInterval);
+                    ctx.channel().id().asShortText(), checkInterval);
             perChannel.queueSize = 0L;
             perChannel.lastReadTimestamp = TrafficCounter.milliSecondFromNano();
             perChannel.lastWriteTimestamp = perChannel.lastReadTimestamp;
@@ -484,7 +482,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         trafficCounter.resetCumulativeTime();
         Channel channel = ctx.channel();
-        Integer key = channel.hashCode();
+        ChannelId key = channel.id();
         PerChannel perChannel = channelQueues.remove(key);
         if (perChannel != null) {
             // write operations need synchronization
@@ -498,13 +496,13 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
                         queuesSize.addAndGet(-size);
                         ctx.write(toSend.toSend, toSend.promise);
                     }
-                } else {
+                } else if (!perChannel.messagesQueue.isEmpty()) {
                     queuesSize.addAndGet(-perChannel.queueSize);
+                    ClosedChannelException cause = new ClosedChannelException();
                     for (ToSend toSend : perChannel.messagesQueue) {
-                        if (toSend.toSend instanceof ByteBuf) {
-                            ((ByteBuf) toSend.toSend).release();
-                        }
+                        releaseAndFailQueuedWrite(toSend.toSend, toSend.promise, cause);
                     }
+                    perChannel.queueSize = 0;
                 }
                 perChannel.messagesQueue.clear();
             }
@@ -521,7 +519,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
         if (size > 0) {
             // compute the number of ms to wait before reopening the channel
             long waitGlobal = trafficCounter.readTimeToWait(size, getReadLimit(), maxTime, now);
-            Integer key = ctx.channel().hashCode();
+            ChannelId key = ctx.channel().id();
             PerChannel perChannel = channelQueues.get(key);
             long wait = 0;
             if (perChannel != null) {
@@ -578,7 +576,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
 
     @Override
     protected long checkWaitReadTime(final ChannelHandlerContext ctx, long wait, final long now) {
-        Integer key = ctx.channel().hashCode();
+        ChannelId key = ctx.channel().id();
         PerChannel perChannel = channelQueues.get(key);
         if (perChannel != null) {
             if (wait > maxTime && now + wait - perChannel.lastReadTimestamp > maxTime) {
@@ -590,7 +588,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
 
     @Override
     protected void informReadOperation(final ChannelHandlerContext ctx, final long now) {
-        Integer key = ctx.channel().hashCode();
+        ChannelId key = ctx.channel().id();
         PerChannel perChannel = channelQueues.get(key);
         if (perChannel != null) {
             perChannel.lastReadTimestamp = now;
@@ -658,7 +656,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
         if (size > 0) {
             // compute the number of ms to wait before continue with the channel
             long waitGlobal = trafficCounter.writeTimeToWait(size, getWriteLimit(), maxTime, now);
-            Integer key = ctx.channel().hashCode();
+            ChannelId key = ctx.channel().id();
             PerChannel perChannel = channelQueues.get(key);
             long wait = 0;
             if (perChannel != null) {
@@ -698,7 +696,7 @@ public class GlobalChannelTrafficShapingHandler extends AbstractTrafficShapingHa
             final long size, final long writedelay, final long now,
             final ChannelPromise promise) {
         Channel channel = ctx.channel();
-        Integer key = channel.hashCode();
+        ChannelId key = channel.id();
         PerChannel perChannel = channelQueues.get(key);
         if (perChannel == null) {
             // in case write occurs before handlerAdded is raised for this handler

@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -26,7 +26,7 @@ import java.util.List;
 
 /**
  * Decodes the Redis protocol into {@link RedisMessage} objects following
- * <a href="http://redis.io/topics/protocol">RESP (REdis Serialization Protocol)</a>.
+ * <a href="https://redis.io/topics/protocol">RESP (REdis Serialization Protocol)</a>.
  *
  * {@link RedisMessage} parts can be aggregated to {@link RedisMessage} using
  * {@link RedisArrayAggregator} or processed directly.
@@ -129,9 +129,13 @@ public final class RedisDecoder extends ByteToMessageDecoder {
                 }
             }
         } catch (RedisCodecException e) {
+            // Let's discard everything
+            in.skipBytes(in.readableBytes());
             resetDecoder();
             throw e;
         } catch (Exception e) {
+            // Let's discard everything
+            in.skipBytes(in.readableBytes());
             resetDecoder();
             throw new RedisCodecException(e);
         }
@@ -169,6 +173,16 @@ public final class RedisDecoder extends ByteToMessageDecoder {
     private boolean decodeLength(ByteBuf in, List<Object> out) throws Exception {
         ByteBuf lineByteBuf = readLine(in);
         if (lineByteBuf == null) {
+            int readableBytes = in.readableBytes();
+            if (readableBytes <= RedisConstants.POSITIVE_LONG_MAX_LENGTH) {
+                // fast-path
+                return false;
+            }
+            boolean isNegative = in.getByte(in.readerIndex()) == '-';
+            int capacity = RedisConstants.POSITIVE_LONG_MAX_LENGTH + (isNegative ? 1 : 0) + 1;
+            if (readableBytes > capacity) {
+                throw new RedisCodecException("too many characters to be a valid RESP Integer: " + readableBytes);
+            }
             return false;
         }
         final long length = parseRedisNumber(lineByteBuf);
@@ -277,9 +291,13 @@ public final class RedisDecoder extends ByteToMessageDecoder {
         if (!in.isReadable(RedisConstants.EOL_LENGTH)) {
             return null;
         }
-        final int lfIndex = in.forEachByte(ByteProcessor.FIND_LF);
+        final int lfIndex = in.indexOf(in.readerIndex(), in.writerIndex(), (byte) '\n');
         if (lfIndex < 0) {
             return null;
+        }
+        if (lfIndex == in.readerIndex()) {
+            // the line starts with LF, so there is no room for the CR before it
+            throw new RedisCodecException("delimiter: LF without preceding CR (expected: \\r\\n)");
         }
         ByteBuf data = in.readSlice(lfIndex - in.readerIndex() - 1); // `-1` is for CR
         readEndOfLine(in); // validate CR LF

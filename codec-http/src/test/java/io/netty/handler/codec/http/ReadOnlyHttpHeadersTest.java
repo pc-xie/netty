@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,7 +16,8 @@
 package io.netty.handler.codec.http;
 
 import io.netty.util.AsciiString;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.util.Iterator;
 import java.util.List;
@@ -30,10 +31,11 @@ import static io.netty.handler.codec.http.HttpHeaderValues.APPLICATION_JSON;
 import static io.netty.handler.codec.http.HttpHeaderValues.APPLICATION_OCTET_STREAM;
 import static io.netty.handler.codec.http.HttpHeaderValues.CLOSE;
 import static io.netty.handler.codec.http.HttpHeaderValues.ZERO;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ReadOnlyHttpHeadersTest {
     @Test
@@ -46,6 +48,15 @@ public class ReadOnlyHttpHeadersTest {
         assertTrue(headers.contains(ACCEPT));
         assertNull(headers.get(CONTENT_LENGTH));
         assertFalse(headers.contains(CONTENT_LENGTH));
+    }
+
+    @Test
+    public void getNotConvertible() {
+        ReadOnlyHttpHeaders headers = new ReadOnlyHttpHeaders(false, CONTENT_LENGTH, "not a number");
+        assertNull(headers.getInt(CONTENT_LENGTH));
+        assertEquals(-1, headers.getInt(CONTENT_LENGTH, -1));
+        assertNull(headers.getShort(CONTENT_LENGTH));
+        assertEquals((short) -1, headers.getShort(CONTENT_LENGTH, (short) -1));
     }
 
     @Test
@@ -113,10 +124,72 @@ public class ReadOnlyHttpHeadersTest {
         assertTrue(APPLICATION_OCTET_STREAM.contentEqualsIgnoreCase(names.get(1)));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
+    public void valueStringIterator() {
+        ReadOnlyHttpHeaders headers = new ReadOnlyHttpHeaders(false,
+                ACCEPT, APPLICATION_JSON, CONTENT_LENGTH, ZERO, ACCEPT, APPLICATION_OCTET_STREAM);
+        Iterator<String> itr = headers.valueStringIterator(ACCEPT);
+        assertTrue(itr.hasNext());
+        assertTrue(APPLICATION_JSON.contentEqualsIgnoreCase(itr.next()));
+        assertTrue(itr.hasNext());
+        assertTrue(APPLICATION_OCTET_STREAM.contentEqualsIgnoreCase(itr.next()));
+        assertFalse(itr.hasNext());
+    }
+
+    @Test
+    public void valueCharSequenceIterator() {
+        ReadOnlyHttpHeaders headers = new ReadOnlyHttpHeaders(false,
+                ACCEPT, APPLICATION_JSON, CONTENT_LENGTH, ZERO, ACCEPT, APPLICATION_OCTET_STREAM);
+        Iterator<CharSequence> itr = headers.valueCharSequenceIterator(ACCEPT);
+        assertTrue(itr.hasNext());
+        assertTrue(APPLICATION_JSON.contentEqualsIgnoreCase(itr.next()));
+        assertTrue(itr.hasNext());
+        assertTrue(APPLICATION_OCTET_STREAM.contentEqualsIgnoreCase(itr.next()));
+        assertFalse(itr.hasNext());
+    }
+
+    @Test
     public void validateNamesFail() {
-        new ReadOnlyHttpHeaders(true,
-                ACCEPT, APPLICATION_JSON, AsciiString.cached(" "));
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new ReadOnlyHttpHeaders(true,
+                        ACCEPT, APPLICATION_JSON, AsciiString.cached(" "));
+            }
+        });
+    }
+
+    @Test
+    public void validateValuesFail() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new ReadOnlyHttpHeaders(true, "x", "a\r\nInjected: 1");
+            }
+        });
+        new ReadOnlyHttpHeaders(false, "x", "a\r\nInjected: 1");
+    }
+
+    @Test
+    public void emptyHeaderName() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new ReadOnlyHttpHeaders(true,
+                        ACCEPT, APPLICATION_JSON, AsciiString.cached(" "), ZERO);
+            }
+        });
+    }
+
+    @Test
+    public void headerWithoutValue() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new ReadOnlyHttpHeaders(false,
+                        ACCEPT, APPLICATION_JSON, CONTENT_LENGTH);
+            }
+        });
     }
 
     private static void assert3ParisEquals(Iterator<Entry<String, String>> itr) {

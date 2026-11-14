@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,20 +18,21 @@ package io.netty.testsuite.transport.socket;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.FixedLengthFrameDecoder;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import java.io.IOException;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.*;
+import static io.netty.testsuite.transport.TestsuitePermutation.randomBufferType;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SocketFixedLengthEchoTest extends AbstractSocketTest {
 
@@ -43,13 +44,23 @@ public class SocketFixedLengthEchoTest extends AbstractSocketTest {
     }
 
     @Test
-    public void testFixedLengthEcho() throws Throwable {
-        run();
+    public void testFixedLengthEcho(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFixedLengthEcho(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     @Test
-    public void testFixedLengthEchoNotAutoRead() throws Throwable {
-        run();
+    public void testFixedLengthEchoNotAutoRead(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFixedLengthEchoNotAutoRead(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     public void testFixedLengthEcho(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -86,7 +97,7 @@ public class SocketFixedLengthEchoTest extends AbstractSocketTest {
         Channel cc = cb.connect(sc.localAddress()).sync().channel();
         for (int i = 0; i < data.length;) {
             int length = Math.min(random.nextInt(1024 * 3), data.length - i);
-            cc.writeAndFlush(Unpooled.wrappedBuffer(data, i, length));
+            cc.writeAndFlush(randomBufferType(cc.alloc(), data, i, length));
             i += length;
         }
 
@@ -98,11 +109,7 @@ public class SocketFixedLengthEchoTest extends AbstractSocketTest {
                 break;
             }
 
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                // Ignore.
-            }
+            Thread.sleep(50);
         }
 
         while (sh.counter < data.length) {
@@ -113,11 +120,7 @@ public class SocketFixedLengthEchoTest extends AbstractSocketTest {
                 break;
             }
 
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                // Ignore.
-            }
+            Thread.sleep(50);
         }
 
         sh.channel.close().sync();
@@ -161,18 +164,20 @@ public class SocketFixedLengthEchoTest extends AbstractSocketTest {
             assertEquals(1024, msg.readableBytes());
 
             byte[] actual = new byte[msg.readableBytes()];
-            msg.getBytes(0, actual);
+            msg.getBytes(msg.readerIndex(), actual);
 
             int lastIdx = counter;
             for (int i = 0; i < actual.length; i ++) {
                 assertEquals(data[i + lastIdx], actual[i]);
             }
 
+            // Update the counter before calling write(...) as write could in theory trigger another channelRead(...)
+            // which then would use the wrong lastIdx.
+            counter += actual.length;
+
             if (channel.parent() != null) {
                 channel.write(msg.retain());
             }
-
-            counter += actual.length;
         }
 
         @Override

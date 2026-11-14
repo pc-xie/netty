@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,42 +17,66 @@ package io.netty.testsuite.transport.socket;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufHolder;
 import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.DatagramPacket;
+import io.netty.util.CharsetUtil;
 import io.netty.util.NetUtil;
-import org.junit.Test;
+import io.netty.util.internal.EmptyArrays;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.opentest4j.TestAbortedException;
 
+import java.net.BindException;
+import java.net.DatagramSocket;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.nio.channels.NotYetConnectedException;
+import java.nio.channels.UnresolvedAddressException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.*;
+import static org.assertj.core.api.Assumptions.assumeThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-public class DatagramUnicastTest extends AbstractDatagramTest {
+public abstract class DatagramUnicastTest extends AbstractDatagramTest {
 
     private static final byte[] BYTES = {0, 1, 2, 3};
-    private enum WrapType {
+    protected enum WrapType {
         NONE, DUP, SLICE, READ_ONLY
     }
 
     @Test
-    public void testSimpleSendDirectByteBuf() throws Throwable {
-        run();
+    public void testSimpleSendDirectByteBuf(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendDirectByteBuf(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendDirectByteBuf(Bootstrap sb, Bootstrap cb) throws Throwable {
@@ -61,8 +85,13 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
     }
 
     @Test
-    public void testSimpleSendHeapByteBuf() throws Throwable {
-        run();
+    public void testSimpleSendHeapByteBuf(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendHeapByteBuf(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendHeapByteBuf(Bootstrap sb, Bootstrap cb) throws Throwable {
@@ -71,8 +100,13 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
     }
 
     @Test
-    public void testSimpleSendCompositeDirectByteBuf() throws Throwable {
-        run();
+    public void testSimpleSendCompositeDirectByteBuf(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendCompositeDirectByteBuf(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendCompositeDirectByteBuf(Bootstrap sb, Bootstrap cb) throws Throwable {
@@ -88,8 +122,13 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
     }
 
     @Test
-    public void testSimpleSendCompositeHeapByteBuf() throws Throwable {
-        run();
+    public void testSimpleSendCompositeHeapByteBuf(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendCompositeHeapByteBuf(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendCompositeHeapByteBuf(Bootstrap sb, Bootstrap cb) throws Throwable {
@@ -105,8 +144,13 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
     }
 
     @Test
-    public void testSimpleSendCompositeMixedByteBuf() throws Throwable {
-        run();
+    public void testSimpleSendCompositeMixedByteBuf(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendCompositeMixedByteBuf(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendCompositeMixedByteBuf(Bootstrap sb, Bootstrap cb) throws Throwable {
@@ -122,8 +166,13 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
     }
 
     @Test
-    public void testSimpleSendWithoutBind() throws Throwable {
-        run();
+    public void testSimpleSendWithoutBind(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendWithoutBind(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendWithoutBind(Bootstrap sb, Bootstrap cb) throws Throwable {
@@ -133,20 +182,269 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
 
     private void testSimpleSend(Bootstrap sb, Bootstrap cb, ByteBuf buf, boolean bindClient,
                                 final byte[] bytes, int count) throws Throwable {
-        for (WrapType type: WrapType.values()) {
-            testSimpleSend0(sb, cb, buf.retain(), bindClient, bytes, count, type);
+        try {
+            for (WrapType type: WrapType.values()) {
+                testSimpleSend0(sb, cb, buf.retain(), bindClient, bytes, count, type);
+            }
+        } finally {
+            assertTrue(buf.release());
         }
-        assertTrue(buf.release());
     }
 
     @Test
-    public void testSimpleSendWithConnect() throws Throwable {
-        run();
+    public void testSimpleSendWithConnect(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSimpleSendWithConnect(bootstrap, bootstrap2);
+            }
+        });
     }
 
     public void testSimpleSendWithConnect(Bootstrap sb, Bootstrap cb) throws Throwable {
         testSimpleSendWithConnect(sb, cb, Unpooled.directBuffer().writeBytes(BYTES), BYTES, 1);
         testSimpleSendWithConnect(sb, cb, Unpooled.directBuffer().writeBytes(BYTES), BYTES, 4);
+    }
+
+    @Test
+    public void testReceiveEmptyDatagrams(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testReceiveEmptyDatagrams(bootstrap, bootstrap2);
+            }
+        });
+    }
+
+    public void testReceiveEmptyDatagrams(Bootstrap sb, Bootstrap cb) throws Throwable {
+        final Semaphore semaphore = new Semaphore(0);
+        Channel server = sb.handler(new ChannelInitializer<Channel>() {
+            @Override
+            protected void initChannel(Channel ch) throws Exception {
+                ch.pipeline().addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) throws Exception {
+                        semaphore.release();
+                    }
+                });
+            }
+        }).bind(newSocketAddress()).sync().channel();
+
+        try {
+            SocketAddress address = server.localAddress();
+            DatagramSocket client;
+            try {
+                client = new DatagramSocket(newSocketAddress());
+            } catch (IllegalArgumentException e) {
+                assumeThat(e.getMessage()).doesNotContainIgnoringCase("unsupported address type");
+                throw e;
+            }
+            try {
+                SocketAddress sendAddress = address instanceof InetSocketAddress ?
+                        sendToAddress((InetSocketAddress) address) : address;
+                for (int i = 0; i < 100; i++) {
+                    try {
+                        client.send(new java.net.DatagramPacket(EmptyArrays.EMPTY_BYTES, 0, sendAddress));
+                    } catch (BindException e) {
+                        throw new TestAbortedException("JDK sockets do not support binding to these addresses.", e);
+                    }
+                    semaphore.acquire();
+                }
+            } finally {
+                client.close();
+            }
+        } finally {
+            closeChannel(server);
+        }
+    }
+
+    @Test
+    public void testSendEmptyDatagramsInOneFlush(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSendEmptyDatagramsInOneFlush(bootstrap, bootstrap2);
+            }
+        });
+    }
+
+    public void testSendEmptyDatagramsInOneFlush(Bootstrap sb, Bootstrap cb) throws Throwable {
+        final String[] sent = { "A", "", "B", "", "C" };
+        final List<String> received = new ArrayList<String>();
+        // A trailing datagram, sent in its own flush, so that a duplicate of the batch would arrive first.
+        final CountDownLatch latch = new CountDownLatch(sent.length + 1);
+        Channel sc = null;
+        Channel cc = null;
+        try {
+            sc = sb.handler(new SimpleChannelInboundHandler<ByteBufHolder>() {
+                @Override
+                protected void channelRead0(ChannelHandlerContext ctx, ByteBufHolder msg) {
+                    synchronized (received) {
+                        received.add(msg.content().toString(CharsetUtil.US_ASCII));
+                    }
+                    latch.countDown();
+                }
+            }).bind(newSocketAddress()).sync().channel();
+            cc = cb.handler(new ChannelInboundHandlerAdapter()).bind(newSocketAddress()).sync().channel();
+
+            SocketAddress localAddr = sc.localAddress();
+            SocketAddress addr = localAddr instanceof InetSocketAddress ?
+                    sendToAddress((InetSocketAddress) localAddr) : localAddr;
+            final Channel client = cc;
+            final SocketAddress remote = addr;
+            final List<ChannelFuture> futures = new ArrayList<ChannelFuture>(sent.length);
+            // Queue all datagrams before the flush so that they are written as one batch.
+            cc.eventLoop().submit(new Runnable() {
+                @Override
+                public void run() {
+                    for (String s : sent) {
+                        ByteBuf buf = Unpooled.copiedBuffer(s, CharsetUtil.US_ASCII);
+                        futures.add(write(client, buf, remote, WrapType.NONE));
+                        // write() retained the buffer
+                        buf.release();
+                    }
+                    client.flush();
+                }
+            }).sync();
+            for (ChannelFuture future : futures) {
+                future.sync();
+            }
+            ByteBuf end = Unpooled.copiedBuffer("END", CharsetUtil.US_ASCII);
+            ChannelFuture endFuture = write(cc, end, addr, WrapType.NONE);
+            end.release();
+            cc.flush();
+            endFuture.sync();
+
+            // Each datagram must arrive exactly once, empty ones included.
+            assertTrue(latch.await(10, TimeUnit.SECONDS), "received " + received);
+            List<String> expected = new ArrayList<String>(Arrays.asList(sent));
+            expected.add("END");
+            synchronized (received) {
+                assertEquals(expected, received);
+            }
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
+        }
+    }
+
+    @Test
+    public void testEmptyDatagramStartsReadLoop(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testEmptyDatagramStartsReadLoop(bootstrap, bootstrap2);
+            }
+        });
+    }
+
+    public void testEmptyDatagramStartsReadLoop(Bootstrap sb, Bootstrap cb) throws Throwable {
+        final String[] sent = { "A", "", "B", "", "C" };
+        final List<String> received = new ArrayList<String>();
+        final CountDownLatch firstReadComplete = new CountDownLatch(1);
+        final CountDownLatch latch = new CountDownLatch(sent.length);
+        Channel sc = null;
+        Channel cc = null;
+        try {
+            sc = sb.handler(new SimpleChannelInboundHandler<ByteBufHolder>() {
+                @Override
+                protected void channelRead0(ChannelHandlerContext ctx, ByteBufHolder msg) {
+                    synchronized (received) {
+                        received.add(msg.content().toString(CharsetUtil.US_ASCII));
+                    }
+                    latch.countDown();
+                }
+
+                @Override
+                public void channelReadComplete(ChannelHandlerContext ctx) {
+                    firstReadComplete.countDown();
+                }
+            }).bind(newSocketAddress()).sync().channel();
+            cc = cb.handler(new ChannelInboundHandlerAdapter()).bind(newSocketAddress()).sync().channel();
+
+            SocketAddress localAddr = sc.localAddress();
+            SocketAddress addr = localAddr instanceof InetSocketAddress ?
+                    sendToAddress((InetSocketAddress) localAddr) : localAddr;
+
+            ByteBuf first = Unpooled.copiedBuffer(sent[0], CharsetUtil.US_ASCII);
+            ChannelFuture firstFuture = write(cc, first, addr, WrapType.NONE);
+            first.release();
+            cc.flush();
+            firstFuture.sync();
+            // Wait until the first read loop has completed so that the next one starts with the empty datagram.
+            assertTrue(firstReadComplete.await(10, TimeUnit.SECONDS), "received " + received);
+
+            for (int i = 1; i < sent.length; i++) {
+                ByteBuf buf = Unpooled.copiedBuffer(sent[i], CharsetUtil.US_ASCII);
+                write(cc, buf, addr, WrapType.NONE);
+                buf.release();
+            }
+            cc.flush();
+
+            // A read loop that starts with an empty datagram must not stop before all datagrams are read.
+            assertTrue(latch.await(10, TimeUnit.SECONDS), "received " + received);
+            synchronized (received) {
+                assertEquals(Arrays.asList(sent), received);
+            }
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
+        }
+    }
+
+    @Test
+    public void testSendToUnresolvableAddress(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<Bootstrap, Bootstrap>() {
+            @Override
+            public void run(Bootstrap bootstrap, Bootstrap bootstrap2) throws Throwable {
+                testSendToUnresolvableAddress(bootstrap, bootstrap2);
+            }
+        });
+    }
+
+    public void testSendToUnresolvableAddress(Bootstrap sb, Bootstrap cb) throws Throwable {
+        SocketAddress serverAddress = newSocketAddress();
+        if (!(serverAddress instanceof InetSocketAddress)) {
+            return;
+        }
+        Channel sc = sb.handler(new ChannelInitializer<Channel>() {
+            @Override
+            protected void initChannel(Channel ch) throws Exception {
+                ch.pipeline().addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) {
+                        // Just drop
+                    }
+                });
+            }
+        }).bind(serverAddress).sync().channel();
+
+        Channel cc = cb.option(ChannelOption.DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION, true).
+                handler(new ChannelInboundHandlerAdapter()).register().sync().channel();
+        try {
+            InetSocketAddress goodHost = sendToAddress((InetSocketAddress) sc.localAddress());
+            InetSocketAddress unresolvedHost = new InetSocketAddress("NOT_A_REAL_ADDRESS", goodHost.getPort());
+
+            assertFalse(goodHost.isUnresolved());
+            assertTrue(unresolvedHost.isUnresolved());
+
+            String message = "hello world!";
+            cc.writeAndFlush(new DatagramPacket(Unpooled.copiedBuffer(message, CharsetUtil.US_ASCII), goodHost)).sync();
+            assertInstanceOf(UnresolvedAddressException.class, cc.writeAndFlush(new DatagramPacket(
+                    Unpooled.copiedBuffer(message, CharsetUtil.US_ASCII), unresolvedHost)).await().cause());
+
+            // DatagramChannel should still be open after sending to unresolved address
+            assertTrue(cc.isOpen());
+
+            // DatagramChannel should still be able to send messages outbound
+            cc.writeAndFlush(new DatagramPacket(Unpooled.copiedBuffer(message, CharsetUtil.US_ASCII), goodHost)).sync();
+            assertInstanceOf(UnresolvedAddressException.class, cc.writeAndFlush(new DatagramPacket(
+                    Unpooled.copiedBuffer(message, CharsetUtil.US_ASCII), unresolvedHost)).await().cause());
+            assertTrue(cc.isOpen());
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -159,7 +457,7 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
         try {
             cb.handler(new SimpleChannelInboundHandler<Object>() {
                 @Override
-                public void channelRead0(ChannelHandlerContext ctx, Object msgs) throws Exception {
+                public void channelRead0(ChannelHandlerContext ctx, Object msgs) {
                     // Nothing will be sent.
                 }
             });
@@ -178,7 +476,9 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
             AtomicReference<Throwable> errorRef = new AtomicReference<Throwable>();
             sc = setupServerChannel(sb, bytes, sender, latch, errorRef, false);
 
-            InetSocketAddress addr = sendToAddress((InetSocketAddress) sc.localAddress());
+            SocketAddress localAddr = sc.localAddress();
+            SocketAddress addr = localAddr instanceof InetSocketAddress ?
+                    sendToAddress((InetSocketAddress) sc.localAddress()) : localAddr;
             List<ChannelFuture> futures = new ArrayList<ChannelFuture>(count);
             for (int i = 0; i < count; i++) {
                 futures.add(write(cc, buf, addr, wrapType));
@@ -205,20 +505,6 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
         }
     }
 
-    private static ChannelFuture write(Channel cc, ByteBuf buf, InetSocketAddress remote, WrapType wrapType) {
-        switch (wrapType) {
-            case DUP:
-                return cc.write(new DatagramPacket(buf.retainedDuplicate(), remote));
-            case SLICE:
-                return cc.write(new DatagramPacket(buf.retainedSlice(), remote));
-            case READ_ONLY:
-                return cc.write(new DatagramPacket(buf.retain().asReadOnly(), remote));
-            case NONE:
-                return cc.write(new DatagramPacket(buf.retain(), remote));
-            default:
-                throw new Error("unknown wrap type: " + wrapType);
-        }
-    }
     private void testSimpleSendWithConnect(Bootstrap sb, Bootstrap cb, ByteBuf buf, final byte[] bytes, int count)
             throws Throwable {
         try {
@@ -232,45 +518,20 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
 
     private void testSimpleSendWithConnect0(Bootstrap sb, Bootstrap cb, ByteBuf buf, final byte[] bytes, int count,
                                             WrapType wrapType) throws Throwable {
-        final CountDownLatch clientLatch = new CountDownLatch(count);
-        final AtomicReference<Throwable> clientErrorRef = new AtomicReference<Throwable>();
-        cb.handler(new SimpleChannelInboundHandler<DatagramPacket>() {
-            @Override
-            public void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) throws Exception {
-                try {
-                    ByteBuf buf = msg.content();
-                    assertEquals(bytes.length, buf.readableBytes());
-                    for (int i = 0; i < bytes.length; i++) {
-                        assertEquals(bytes[i], buf.getByte(buf.readerIndex() + i));
-                    }
-
-                    InetSocketAddress localAddress = (InetSocketAddress) ctx.channel().localAddress();
-                    if (localAddress.getAddress().isAnyLocalAddress()) {
-                        assertEquals(localAddress.getPort(), msg.recipient().getPort());
-                    } else {
-                        // Test that the channel's localAddress is equal to the message's recipient
-                        assertEquals(localAddress, msg.recipient());
-                    }
-                } finally {
-                    clientLatch.countDown();
-                }
-            }
-
-            @Override
-            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-                clientErrorRef.compareAndSet(null, cause);
-            }
-        });
-
         Channel sc = null;
-        DatagramChannel cc = null;
+        Channel cc = null;
         try {
             final CountDownLatch latch = new CountDownLatch(count);
             final AtomicReference<Throwable> errorRef = new AtomicReference<Throwable>();
-            cc = (DatagramChannel) cb.bind(newSocketAddress()).sync().channel();
+            final CountDownLatch clientLatch = new CountDownLatch(count);
+            final AtomicReference<Throwable> clientErrorRef = new AtomicReference<Throwable>();
+            cc = setupClientChannel(cb, bytes, clientLatch, clientErrorRef);
             sc = setupServerChannel(sb, bytes, cc.localAddress(), latch, errorRef, true);
 
-            cc.connect(sendToAddress((InetSocketAddress) sc.localAddress())).syncUninterruptibly();
+            SocketAddress localAddr = sc.localAddress();
+            SocketAddress addr = localAddr instanceof InetSocketAddress ?
+                    sendToAddress((InetSocketAddress) sc.localAddress()) : localAddr;
+            cc.connect(addr).syncUninterruptibly();
 
             List<ChannelFuture> futures = new ArrayList<ChannelFuture>();
             for (int i = 0; i < count; i++) {
@@ -296,21 +557,32 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
                 }
                 fail();
             }
-            assertTrue(cc.isConnected());
+            assertTrue(isConnected(cc));
 
             assertNotNull(cc.localAddress());
             assertNotNull(cc.remoteAddress());
 
-            // Test what happens when we call disconnect()
-            cc.disconnect().syncUninterruptibly();
-            assertFalse(cc.isConnected());
-            assertNotNull(cc.localAddress());
-            assertNull(cc.remoteAddress());
+            if (supportDisconnect()) {
+                try {
+                    // Test what happens when we call disconnect()
+                    cc.disconnect().syncUninterruptibly();
+                } catch (Throwable e) {
+                    if (e instanceof SocketException) {
+                        if (disconnectMightFail((DatagramChannel) cc)) {
+                            return;
+                        }
+                    }
+                    throw e;
+                }
+                assertFalse(isConnected(cc));
+                assertNotNull(cc.localAddress());
+                assertNull(cc.remoteAddress());
 
-            ChannelFuture future = cc.writeAndFlush(
-                    buf.retain().duplicate()).awaitUninterruptibly();
-            assertTrue("NotYetConnectedException expected, got: " + future.cause(),
-                    future.cause() instanceof NotYetConnectedException);
+                ChannelFuture future = cc.writeAndFlush(
+                        buf.retain().duplicate()).awaitUninterruptibly();
+                assertTrue(future.cause() instanceof NotYetConnectedException,
+                        "NotYetConnectedException expected, got: " + future.cause());
+            }
         } finally {
             // release as we used buf.retain() before
             buf.release();
@@ -335,57 +607,24 @@ public class DatagramUnicastTest extends AbstractDatagramTest {
         }
     }
 
-    @SuppressWarnings("deprecation")
-    private Channel setupServerChannel(Bootstrap sb, final byte[] bytes, final SocketAddress sender,
-                                       final CountDownLatch latch, final AtomicReference<Throwable> errorRef,
-                                       final boolean echo)
-            throws Throwable {
-        sb.handler(new ChannelInitializer<Channel>() {
-            @Override
-            protected void initChannel(Channel ch) throws Exception {
-                ch.pipeline().addLast(new SimpleChannelInboundHandler<DatagramPacket>() {
-                    @Override
-                    public void channelRead0(ChannelHandlerContext ctx, DatagramPacket msg) throws Exception {
-                        try {
-                            if (sender == null) {
-                                assertNotNull(msg.sender());
-                            } else {
-                                InetSocketAddress senderAddress = (InetSocketAddress) sender;
-                                if (senderAddress.getAddress().isAnyLocalAddress()) {
-                                    assertEquals(senderAddress.getPort(), msg.sender().getPort());
-                                } else {
-                                    assertEquals(sender, msg.sender());
-                                }
-                            }
+    protected abstract boolean isConnected(Channel channel);
 
-                            ByteBuf buf = msg.content();
-                            assertEquals(bytes.length, buf.readableBytes());
-                            for (int i = 0; i < bytes.length; i++) {
-                                assertEquals(bytes[i], buf.getByte(buf.readerIndex() + i));
-                            }
+    protected abstract Channel setupClientChannel(Bootstrap cb, byte[] bytes, CountDownLatch latch,
+                                                  AtomicReference<Throwable> errorRef) throws Throwable;
 
-                            // Test that the channel's localAddress is equal to the message's recipient
-                            assertEquals(ctx.channel().localAddress(), msg.recipient());
+    protected abstract Channel setupServerChannel(Bootstrap sb, byte[] bytes, SocketAddress sender,
+                                                  CountDownLatch latch, AtomicReference<Throwable> errorRef,
+                                                  boolean echo) throws Throwable;
 
-                            if (echo) {
-                                ctx.writeAndFlush(new DatagramPacket(buf.retainedDuplicate(), msg.sender()));
-                            }
-                        } finally {
-                            latch.countDown();
-                        }
-                    }
+    protected abstract boolean supportDisconnect();
 
-                    @Override
-                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-                        errorRef.compareAndSet(null, cause);
-                    }
-                });
-            }
-        });
-        return sb.bind(newSocketAddress()).sync().channel();
+    protected boolean disconnectMightFail(DatagramChannel channel) {
+        return false;
     }
 
-    private static void closeChannel(Channel channel) throws Exception {
+    protected abstract ChannelFuture write(Channel cc, ByteBuf buf, SocketAddress remote, WrapType wrapType);
+
+    protected static void closeChannel(Channel channel) throws Exception {
         if (channel != null) {
             channel.close().sync();
         }

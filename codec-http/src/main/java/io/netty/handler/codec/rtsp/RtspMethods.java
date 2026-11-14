@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,10 +15,12 @@
  */
 package io.netty.handler.codec.rtsp;
 
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
+
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.util.internal.ObjectUtil;
 
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -118,19 +120,15 @@ public final class RtspMethods {
      * will be returned.  Otherwise, a new instance will be returned.
      */
     public static HttpMethod valueOf(String name) {
-        ObjectUtil.checkNotNull(name, "name");
-
-        name = name.trim().toUpperCase();
-        if (name.isEmpty()) {
-            throw new IllegalArgumentException("empty name");
-        }
-
+        // RFC 2326 RTSP method names are ASCII tokens. toUpperCase() without an explicit Locale
+        // uses the JVM default, which in Turkish (tr_TR) maps 'i' to 'İ' (U+0130) and breaks the
+        // lookup of methods such as "describe" or "redirect" against the cached uppercase keys.
+        name = checkNotNull(name, "name").toUpperCase(Locale.US);
         HttpMethod result = methodMap.get(name);
         if (result != null) {
             return result;
-        } else {
-            return HttpMethod.valueOf(name);
         }
+        return HttpMethod.valueOf(name);
     }
 
     private RtspMethods() {

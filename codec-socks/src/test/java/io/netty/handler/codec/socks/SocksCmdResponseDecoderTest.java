@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,9 +18,14 @@ package io.netty.handler.codec.socks;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class SocksCmdResponseDecoderTest {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(SocksCmdResponseDecoderTest.class);
@@ -33,7 +38,7 @@ public class SocksCmdResponseDecoderTest {
         EmbeddedChannel embedder = new EmbeddedChannel(decoder);
         SocksCommonTestUtils.writeMessageIntoEmbedder(embedder, msg);
         if (addressType == SocksAddressType.UNKNOWN) {
-            assertTrue(embedder.readInbound() instanceof UnknownSocksResponse);
+            assertInstanceOf(UnknownSocksResponse.class, embedder.readInbound());
         } else {
             msg = embedder.readInbound();
             assertEquals(((SocksCmdResponse) msg).cmdStatus(), cmdStatus);
@@ -43,6 +48,7 @@ public class SocksCmdResponseDecoderTest {
             assertEquals(((SocksCmdResponse) msg).port(), port);
         }
         assertNull(embedder.readInbound());
+        assertFalse(embedder.finish());
     }
 
     /**
@@ -60,9 +66,15 @@ public class SocksCmdResponseDecoderTest {
     /**
      * Verifies that invalid bound host will fail with IllegalArgumentException during encoding.
      */
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testInvalidAddress() {
-        testSocksCmdResponseDecoderWithDifferentParams(SocksCmdStatus.SUCCESS, SocksAddressType.IPv4, "1", 80);
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                testSocksCmdResponseDecoderWithDifferentParams(
+                        SocksCmdStatus.SUCCESS, SocksAddressType.IPv4, "1", 80);
+            }
+        });
     }
 
     /**
@@ -80,5 +92,16 @@ public class SocksCmdResponseDecoderTest {
             testSocksCmdResponseDecoderWithDifferentParams(cmdStatus, SocksAddressType.IPv6,
                     "1111:111:11:1:0:0:0:1", 80);
         }
+    }
+
+    /**
+     * The bound domain length octet is unsigned; a bound domain of 128 to 255 characters must decode.
+     */
+    @Test
+    public void testSocksCmdResponseDecoderLongDomain() {
+        testSocksCmdResponseDecoderWithDifferentParams(
+                SocksCmdStatus.SUCCESS, SocksAddressType.DOMAIN, SocksCommonTestUtils.domainOfLength(128), 80);
+        testSocksCmdResponseDecoderWithDifferentParams(
+                SocksCmdStatus.SUCCESS, SocksAddressType.DOMAIN, SocksCommonTestUtils.domainOfLength(255), 80);
     }
 }

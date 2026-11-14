@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -19,22 +19,26 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.EventLoopGroup;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.opentest4j.TestAbortedException;
 
 import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.util.Random;
 
 import static io.netty.channel.kqueue.BsdSocket.BSD_SND_LOW_AT_MAX;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.junit.Assume.assumeNoException;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class KQueueSocketChannelConfigTest {
 
@@ -42,18 +46,18 @@ public class KQueueSocketChannelConfigTest {
     private static KQueueSocketChannel ch;
     private static Random rand;
 
-    @BeforeClass
+    @BeforeAll
     public static void beforeClass() {
         rand = new Random();
         group = new KQueueEventLoopGroup(1);
     }
 
-    @AfterClass
+    @AfterAll
     public static void afterClass() {
         group.shutdownGracefully();
     }
 
-    @Before
+    @BeforeEach
     public void setup() {
         Bootstrap bootstrap = new Bootstrap();
         ch = (KQueueSocketChannel) bootstrap.group(group)
@@ -62,7 +66,7 @@ public class KQueueSocketChannelConfigTest {
                 .bind(new InetSocketAddress(0)).syncUninterruptibly().channel();
     }
 
-    @After
+    @AfterEach
     public void teardown() {
         ch.close().syncUninterruptibly();
     }
@@ -75,8 +79,7 @@ public class KQueueSocketChannelConfigTest {
             ch.config().setSndLowAt(expected);
             actual = ch.config().getSndLowAt();
         } catch (RuntimeException e) {
-            assumeNoException(e);
-            return; // Needed to prevent compile error for final variables to be used below
+            throw new TestAbortedException("assumeNoException", e);
         }
         assertEquals(expected, actual);
     }
@@ -88,7 +91,7 @@ public class KQueueSocketChannelConfigTest {
         } catch (ChannelException e) {
             return;
         } catch (RuntimeException e) {
-            assumeNoException(e);
+            throw new TestAbortedException("assumeNoException", e);
         }
         fail();
     }
@@ -104,22 +107,24 @@ public class KQueueSocketChannelConfigTest {
     @Test
     public void testSetOptionWhenClosed() {
         ch.close().syncUninterruptibly();
-        try {
-            ch.config().setSoLinger(0);
-            fail();
-        } catch (ChannelException e) {
-            assertTrue(e.getCause() instanceof ClosedChannelException);
-        }
+        ChannelException e = assertThrows(ChannelException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                ch.config().setSoLinger(0);
+            }
+        });
+        assertInstanceOf(ClosedChannelException.class, e.getCause());
     }
 
     @Test
     public void testGetOptionWhenClosed() {
         ch.close().syncUninterruptibly();
-        try {
-        ch.config().getSoLinger();
-            fail();
-        } catch (ChannelException e) {
-            assertTrue(e.getCause() instanceof ClosedChannelException);
-        }
+        ChannelException e = assertThrows(ChannelException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                ch.config().getSoLinger();
+            }
+        });
+        assertInstanceOf(ClosedChannelException.class, e.getCause());
     }
 }

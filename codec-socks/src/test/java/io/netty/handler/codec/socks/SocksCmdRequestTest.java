@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,14 +16,18 @@
 package io.netty.handler.codec.socks;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import io.netty.util.CharsetUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.IDN;
+import java.nio.ByteOrder;
 import java.nio.CharBuffer;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
 public class SocksCmdRequestTest {
     @Test
@@ -31,19 +35,19 @@ public class SocksCmdRequestTest {
         try {
             new SocksCmdRequest(null, SocksAddressType.UNKNOWN, "", 1);
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
 
         try {
             new SocksCmdRequest(SocksCmdType.UNKNOWN, null, "", 1);
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
 
         try {
             new SocksCmdRequest(SocksCmdType.UNKNOWN, SocksAddressType.UNKNOWN, null, 1);
         } catch (Exception e) {
-            assertTrue(e instanceof NullPointerException);
+            assertInstanceOf(NullPointerException.class, e);
         }
     }
 
@@ -52,7 +56,7 @@ public class SocksCmdRequestTest {
         try {
             new SocksCmdRequest(SocksCmdType.BIND, SocksAddressType.IPv4, "54.54.1111.253", 1);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 
@@ -61,7 +65,7 @@ public class SocksCmdRequestTest {
         try {
             new SocksCmdRequest(SocksCmdType.BIND, SocksAddressType.IPv6, "xxx:xxx:xxx", 1);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 
@@ -74,7 +78,7 @@ public class SocksCmdRequestTest {
                     "παράδειγμα.δοκιμήπαράδειγμα.δοκιμήπαράδειγμα.δοκιμήπαράδειγμα.δοκιμή" +
                     "παράδειγμα.δοκιμήπαράδειγμα.δοκιμήπαράδειγμα.δοκιμήπαράδειγμα.δοκιμή", 1);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 
@@ -119,7 +123,31 @@ public class SocksCmdRequestTest {
         assertEquals((byte) asciiHost.length(), buffer.readUnsignedByte());
         assertEquals(asciiHost,
             CharBuffer.wrap(buffer.readCharSequence(asciiHost.length(), CharsetUtil.US_ASCII)));
-        assertEquals(port, buffer.readUnsignedShort());
+        assertEquals(port, ByteBufUtil.readUnsignedShortBE(buffer));
+
+        buffer.release();
+    }
+
+    @Test
+    public void testEndianessForPort() {
+        String host = "localhost";
+        CharBuffer asciiHost = CharBuffer.wrap(host);
+        short port = 10000;
+
+        SocksCmdRequest rq = new SocksCmdRequest(SocksCmdType.BIND, SocksAddressType.DOMAIN, host, port);
+        assertEquals(host, rq.host());
+
+        ByteBuf buffer = Unpooled.buffer(24).order(ByteOrder.LITTLE_ENDIAN);
+        rq.encodeAsByteBuf(buffer);
+
+        assertEquals(SocksProtocolVersion.SOCKS5.byteValue(), buffer.readByte());
+        assertEquals(SocksCmdType.BIND.byteValue(), buffer.readByte());
+        assertEquals((byte) 0x00, buffer.readByte());
+        assertEquals(SocksAddressType.DOMAIN.byteValue(), buffer.readByte());
+        assertEquals((byte) asciiHost.length(), buffer.readUnsignedByte());
+        assertEquals(asciiHost,
+            CharBuffer.wrap(buffer.readCharSequence(asciiHost.length(), CharsetUtil.US_ASCII)));
+        assertEquals(port, ByteBufUtil.readUnsignedShortBE(buffer));
 
         buffer.release();
     }
@@ -130,14 +158,14 @@ public class SocksCmdRequestTest {
             new SocksCmdRequest(SocksCmdType.BIND, SocksAddressType.DOMAIN,
                     "παράδειγμα.δοκιμήπαράδει", 0);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
 
         try {
             new SocksCmdRequest(SocksCmdType.BIND, SocksAddressType.DOMAIN,
                     "παράδειγμα.δοκιμήπαράδει", 65536);
         } catch (Exception e) {
-            assertTrue(e instanceof IllegalArgumentException);
+            assertInstanceOf(IllegalArgumentException.class, e);
         }
     }
 }

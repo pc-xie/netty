@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -30,6 +30,7 @@ import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.channel.socket.SocketChannelConfig;
 import io.netty.util.internal.StringUtil;
+import io.netty.util.internal.ThrowableUtil;
 
 import java.io.IOException;
 import java.nio.channels.SelectableChannel;
@@ -104,7 +105,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 } else {
                     close(voidPromise());
                 }
-            } else {
+            } else if (!inputClosedSeenErrorOnRead) {
                 inputClosedSeenErrorOnRead = true;
                 pipeline.fireUserEventTriggered(ChannelInputShutdownReadComplete.INSTANCE);
             }
@@ -115,7 +116,11 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             if (byteBuf != null) {
                 if (byteBuf.isReadable()) {
                     readPending = false;
-                    pipeline.fireChannelRead(byteBuf);
+                    try {
+                        pipeline.fireChannelRead(byteBuf);
+                    } catch (Exception e) {
+                        ThrowableUtil.addSuppressed(cause, e);
+                    }
                 } else {
                     byteBuf.release();
                 }
@@ -123,7 +128,10 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             allocHandle.readComplete();
             pipeline.fireChannelReadComplete();
             pipeline.fireExceptionCaught(cause);
-            if (close || cause instanceof IOException) {
+
+            // If oom will close the read event, release connection.
+            // See https://github.com/netty/netty/issues/10434
+            if (close || cause instanceof OutOfMemoryError || cause instanceof IOException) {
                 closeOnRead(pipeline);
             }
         }

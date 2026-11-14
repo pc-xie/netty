@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,7 +18,13 @@ package io.netty.handler.codec.http.websocketx.extensions.compression;
 import static io.netty.handler.codec.http.websocketx.extensions.WebSocketExtension.RSV1;
 import static io.netty.handler.codec.http.websocketx.extensions.compression.
         PerMessageDeflateServerExtensionHandshaker.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -31,14 +37,15 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 public class PerMessageDeflateClientExtensionHandshakerTest {
 
     @Test
     public void testNormalData() {
         PerMessageDeflateClientExtensionHandshaker handshaker =
-                new PerMessageDeflateClientExtensionHandshaker();
+                new PerMessageDeflateClientExtensionHandshaker(0);
 
         WebSocketExtensionData data = handshaker.newRequestData();
 
@@ -49,7 +56,7 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
     @Test
     public void testCustomData() {
         PerMessageDeflateClientExtensionHandshaker handshaker =
-                new PerMessageDeflateClientExtensionHandshaker(6, true, 10, true, true);
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 10, true, true, 0);
 
         WebSocketExtensionData data = handshaker.newRequestData();
 
@@ -64,15 +71,15 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
     @Test
     public void testNormalHandshake() {
         PerMessageDeflateClientExtensionHandshaker handshaker =
-                new PerMessageDeflateClientExtensionHandshaker();
+                new PerMessageDeflateClientExtensionHandshaker(0);
 
         WebSocketClientExtension extension = handshaker.handshakeExtension(
                 new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, Collections.<String, String>emptyMap()));
 
         assertNotNull(extension);
         assertEquals(RSV1, extension.rsv());
-        assertTrue(extension.newExtensionDecoder() instanceof PerMessageDeflateDecoder);
-        assertTrue(extension.newExtensionEncoder() instanceof PerMessageDeflateEncoder);
+        assertInstanceOf(PerMessageDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerMessageDeflateEncoder.class, extension.newExtensionEncoder());
     }
 
     @Test
@@ -82,11 +89,11 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
 
         // initialize
         PerMessageDeflateClientExtensionHandshaker handshaker =
-                new PerMessageDeflateClientExtensionHandshaker(6, true, 10, true, true);
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 10, true, true, 0);
 
         parameters = new HashMap<String, String>();
         parameters.put(CLIENT_MAX_WINDOW, "12");
-        parameters.put(SERVER_MAX_WINDOW, "10");
+        parameters.put(SERVER_MAX_WINDOW, "8");
         parameters.put(CLIENT_NO_CONTEXT, null);
         parameters.put(SERVER_NO_CONTEXT, null);
 
@@ -97,8 +104,8 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
         // test
         assertNotNull(extension);
         assertEquals(RSV1, extension.rsv());
-        assertTrue(extension.newExtensionDecoder() instanceof PerMessageDeflateDecoder);
-        assertTrue(extension.newExtensionEncoder() instanceof PerMessageDeflateEncoder);
+        assertInstanceOf(PerMessageDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerMessageDeflateEncoder.class, extension.newExtensionEncoder());
 
         // initialize
         parameters = new HashMap<String, String>();
@@ -112,8 +119,8 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
         // test
         assertNotNull(extension);
         assertEquals(RSV1, extension.rsv());
-        assertTrue(extension.newExtensionDecoder() instanceof PerMessageDeflateDecoder);
-        assertTrue(extension.newExtensionEncoder() instanceof PerMessageDeflateEncoder);
+        assertInstanceOf(PerMessageDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerMessageDeflateEncoder.class, extension.newExtensionEncoder());
 
         // initialize
         parameters = new HashMap<String, String>();
@@ -127,9 +134,66 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
     }
 
     @Test
+    public void testParameterValidation() {
+        WebSocketClientExtension extension;
+        Map<String, String> parameters;
+
+        PerMessageDeflateClientExtensionHandshaker handshaker =
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, false, 0);
+
+        parameters = new HashMap<String, String>();
+        parameters.put(CLIENT_MAX_WINDOW, "15");
+        parameters.put(SERVER_MAX_WINDOW, "8");
+        extension = handshaker.handshakeExtension(new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, parameters));
+
+        // Test that handshake succeeds when parameters are valid
+        assertNotNull(extension);
+        assertEquals(RSV1, extension.rsv());
+        assertInstanceOf(PerMessageDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerMessageDeflateEncoder.class, extension.newExtensionEncoder());
+
+        parameters = new HashMap<String, String>();
+        parameters.put(CLIENT_MAX_WINDOW, "15");
+        parameters.put(SERVER_MAX_WINDOW, "7");
+
+        extension = handshaker.handshakeExtension(new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, parameters));
+
+        // Test that handshake fails when parameters are invalid
+        assertNull(extension);
+    }
+
+    @Test
+    public void testServerNoContextTakeover() {
+        WebSocketClientExtension extension;
+        Map<String, String> parameters;
+
+        PerMessageDeflateClientExtensionHandshaker handshaker =
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, false, 0);
+
+        parameters = new HashMap<String, String>();
+        parameters.put(SERVER_NO_CONTEXT, null);
+        extension = handshaker.handshakeExtension(new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, parameters));
+
+        // Test that handshake succeeds when server responds with `server_no_context_takeover` that we didn't offer
+        assertNotNull(extension);
+        assertEquals(RSV1, extension.rsv());
+        assertInstanceOf(PerMessageDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerMessageDeflateEncoder.class, extension.newExtensionEncoder());
+
+        // initialize
+        handshaker = new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, true, 0);
+
+        parameters = new HashMap<String, String>();
+        extension = handshaker.handshakeExtension(new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, parameters));
+
+        // Test that handshake fails when client offers `server_no_context_takeover` but server doesn't support it
+        assertNull(extension);
+    }
+
+    @Test
     public void testDecoderNoClientContext() {
         PerMessageDeflateClientExtensionHandshaker handshaker =
-                new PerMessageDeflateClientExtensionHandshaker(6, true, MAX_WINDOW_SIZE, true, false);
+                new PerMessageDeflateClientExtensionHandshaker(6, true, MAX_WINDOW_SIZE, true, false, 0);
 
         byte[] firstPayload = new byte[] {
                 76, -50, -53, 10, -62, 48, 20, 4, -48, 95, 41, 89, -37, 36, 77, 90, 31, -39, 41, -72, 112, 33, -120, 20,
@@ -165,7 +229,7 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
 
         assertNotNull(firstFrameDecompressed);
         assertNotNull(firstFrameDecompressed.content());
-        assertTrue(firstFrameDecompressed instanceof TextWebSocketFrame);
+        assertInstanceOf(TextWebSocketFrame.class, firstFrameDecompressed);
         assertEquals(firstFrameDecompressed.text(),
                      "{\"info\":\"Welcome to the BitMEX Realtime API.\",\"version\"" +
                      ":\"2018-10-02T22:53:23.000Z\",\"timestamp\":\"2018-10-15T06:43:40.437Z\"," +
@@ -174,12 +238,52 @@ public class PerMessageDeflateClientExtensionHandshakerTest {
 
         assertNotNull(secondFrameDecompressed);
         assertNotNull(secondFrameDecompressed.content());
-        assertTrue(secondFrameDecompressed instanceof TextWebSocketFrame);
+        assertInstanceOf(TextWebSocketFrame.class, secondFrameDecompressed);
         assertEquals(secondFrameDecompressed.text(),
                      "{\"success\":true,\"subscribe\":\"orderBookL2:XBTUSD\"," +
                      "\"request\":{\"op\":\"subscribe\",\"args\":[\"orderBookL2:XBTUSD\"]}}");
         assertTrue(secondFrameDecompressed.release());
 
         assertFalse(decoderChannel.finish());
+    }
+
+    @Test
+    public void testClientMaxWindowWithNoValue() {
+        // Test that client handles client_max_window_bits with no value (null)
+        // RFC 7692: client_max_window_bits may have no value
+        PerMessageDeflateClientExtensionHandshaker handshaker =
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, false, 0);
+
+        Map<String, String> parameters = new HashMap<String, String>();
+        parameters.put(CLIENT_MAX_WINDOW, null); // No value specified
+
+        // Should not throw NumberFormatException
+        WebSocketClientExtension extension = handshaker.handshakeExtension(
+                new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, parameters));
+
+        // Handshake should succeed, using MAX_WINDOW_SIZE (15) as default
+        assertNotNull(extension);
+        assertEquals(RSV1, extension.rsv());
+        assertInstanceOf(PerMessageDeflateDecoder.class, extension.newExtensionDecoder());
+        assertInstanceOf(PerMessageDeflateEncoder.class, extension.newExtensionEncoder());
+    }
+
+    @Test
+    public void testClientMaxWindowWithInvalidValue() {
+        // Test that client throws NumberFormatException for invalid client_max_window_bits value
+        final PerMessageDeflateClientExtensionHandshaker handshaker =
+                new PerMessageDeflateClientExtensionHandshaker(6, true, 15, true, false, 0);
+
+        final Map<String, String> parameters = new HashMap<String, String>();
+        parameters.put(CLIENT_MAX_WINDOW, "invalid");
+
+        // Should throw NumberFormatException
+        assertThrows(NumberFormatException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                handshaker.handshakeExtension(
+                        new WebSocketExtensionData(PERMESSAGE_DEFLATE_EXTENSION, parameters));
+            }
+        });
     }
 }

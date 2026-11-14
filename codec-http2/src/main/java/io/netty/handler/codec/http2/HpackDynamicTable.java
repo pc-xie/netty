@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -21,7 +21,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *     https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -83,7 +83,7 @@ final class HpackDynamicTable {
      */
     public HpackHeaderField getEntry(int index) {
         if (index <= 0 || index > length()) {
-            throw new IndexOutOfBoundsException();
+            throw new IndexOutOfBoundsException("Index " + index + " out of bounds for length " + length());
         }
         int i = head - index;
         if (i < 0) {
@@ -109,7 +109,7 @@ final class HpackDynamicTable {
             remove();
         }
         hpackHeaderFields[head++] = header;
-        size += header.size();
+        size += headerSize;
         if (head == hpackHeaderFields.length) {
             head = 0;
         }
@@ -174,21 +174,29 @@ final class HpackDynamicTable {
             maxEntries++;
         }
 
+        // The entries are held in a circular queue that uses head == tail to represent the empty table. It can
+        // therefore hold at most (array length - 1) entries: one slot must stay free, otherwise adding the
+        // maxEntries-th entry wraps head onto tail and length() wrongly reports an empty table, which makes the
+        // just-added entries unreachable and lets a valid indexed reference fail with "illegal index value".
+        int arrayLength = maxEntries + 1;
+
         // check if capacity change requires us to reallocate the array
-        if (hpackHeaderFields != null && hpackHeaderFields.length == maxEntries) {
+        if (hpackHeaderFields != null && hpackHeaderFields.length == arrayLength) {
             return;
         }
 
-        HpackHeaderField[] tmp = new HpackHeaderField[maxEntries];
+        HpackHeaderField[] tmp = new HpackHeaderField[arrayLength];
 
         // initially length will be 0 so there will be no copy
         int len = length();
-        int cursor = tail;
-        for (int i = 0; i < len; i++) {
-            HpackHeaderField entry = hpackHeaderFields[cursor++];
-            tmp[i] = entry;
-            if (cursor == hpackHeaderFields.length) {
-                cursor = 0;
+        if (hpackHeaderFields != null) {
+            int cursor = tail;
+            for (int i = 0; i < len; i++) {
+                HpackHeaderField entry = hpackHeaderFields[cursor++];
+                tmp[i] = entry;
+                if (cursor == hpackHeaderFields.length) {
+                    cursor = 0;
+                }
             }
         }
 

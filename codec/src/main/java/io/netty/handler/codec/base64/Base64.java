@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,12 +15,13 @@
  */
 /*
  * Written by Robert Harder and released to the public domain, as explained at
- * http://creativecommons.org/licenses/publicdomain
+ * https://creativecommons.org/licenses/publicdomain
  */
 package io.netty.handler.codec.base64;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.Unpooled;
 import io.netty.util.ByteProcessor;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
@@ -29,7 +30,7 @@ import java.nio.ByteOrder;
 
 /**
  * Utility class for {@link ByteBuf} that encodes and decodes to and from
- * <a href="http://en.wikipedia.org/wiki/Base64">Base64</a> notation.
+ * <a href="https://en.wikipedia.org/wiki/Base64">Base64</a> notation.
  * <p>
  * The encoding and decoding algorithm in this class has been derived from
  * <a href="http://iharder.sourceforge.net/current/java/base64/">Robert Harder's Public Domain
@@ -105,7 +106,14 @@ public final class Base64 {
         ObjectUtil.checkNotNull(src, "src");
         ObjectUtil.checkNotNull(dialect, "dialect");
 
-        ByteBuf dest = allocator.buffer(encodedBufferSize(len, breakLines)).order(src.order());
+        int capacity = encodedBufferSize(len, breakLines);
+        ByteBuf destBuf = allocator.buffer(capacity).order(src.order());
+        // Ensure the destination buffer is flat, if possible, and avoid leak detection checks on every write:
+        ByteBuf dest = destBuf.unwrap() == null || !destBuf.isContiguous() ? destBuf :
+                destBuf.hasArray() ?
+                        Unpooled.wrappedBuffer(destBuf.array(), destBuf.arrayOffset(), capacity).order(src.order()) :
+                        Unpooled.wrappedBuffer(destBuf.internalNioBuffer(0, capacity)).order(src.order());
+
         byte[] alphabet = alphabet(dialect);
         int d = 0;
         int e = 0;
@@ -132,8 +140,10 @@ public final class Base64 {
         if (e > 1 && dest.getByte(e - 1) == NEW_LINE) {
             e--;
         }
-
-        return dest.slice(0, e);
+        if (dest != destBuf) {
+            dest.release();
+        }
+        return destBuf.setIndex(0, e);
     }
 
     private static void encode3to4(

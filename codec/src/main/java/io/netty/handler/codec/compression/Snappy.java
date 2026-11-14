@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,17 +16,24 @@
 package io.netty.handler.codec.compression;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.util.concurrent.FastThreadLocal;
+import io.netty.util.internal.MathUtil;
+import io.netty.util.internal.SystemPropertyUtil;
+
+import java.util.Arrays;
 
 /**
  * Uncompresses an input {@link ByteBuf} encoded with Snappy compression into an
  * output {@link ByteBuf}.
- *
+ * <p>
  * See <a href="https://github.com/google/snappy/blob/master/format_description.txt">snappy format</a>.
  */
 public final class Snappy {
 
     private static final int MAX_HT_SIZE = 1 << 14;
     private static final int MIN_COMPRESSIBLE_BYTES = 15;
+    // The offset of a copy is encoded as an unsigned 16 bit value, so we can't reference data that is further back.
+    private static final int MAX_COPY_OFFSET = 0xFFFF;
 
     // used as a return value to indicate that we haven't yet read our full preamble
     private static final int PREAMBLE_NOT_FULL = -1;
@@ -38,12 +45,30 @@ public final class Snappy {
     private static final int COPY_2_BYTE_OFFSET = 2;
     private static final int COPY_4_BYTE_OFFSET = 3;
 
-    private State state = State.READY;
+    // Hash table used to compress, shared between subsequent call to .encode()
+    private static final FastThreadLocal<short[]> HASH_TABLE = new FastThreadLocal<short[]>();
+
+    private static final boolean DEFAULT_REUSE_HASHTABLE =
+            SystemPropertyUtil.getBoolean("io.netty.handler.codec.compression.snappy.reuseHashTable", false);
+
+    public Snappy() {
+        this(DEFAULT_REUSE_HASHTABLE);
+    }
+
+    Snappy(boolean reuseHashtable) {
+        this.reuseHashtable = reuseHashtable;
+    }
+
+    public static Snappy withHashTableReuse() {
+        return new Snappy(true);
+    }
+
+    private final boolean reuseHashtable;
+    private State state = State.READING_PREAMBLE;
     private byte tag;
     private int written;
 
     private enum State {
-        READY,
         READING_PREAMBLE,
         READING_TAG,
         READING_LITERAL,
@@ -51,7 +76,7 @@ public final class Snappy {
     }
 
     public void reset() {
-        state = State.READY;
+        state = State.READING_PREAMBLE;
         tag = 0;
         written = 0;
     }
@@ -70,13 +95,16 @@ public final class Snappy {
 
         int inIndex = in.readerIndex();
         final int baseIndex = inIndex;
+        final int endIndex = baseIndex + length;
 
-        final short[] table = getHashTable(length);
-        final int shift = Integer.numberOfLeadingZeros(table.length) + 1;
+        int hashTableSize = MathUtil.findNextPositivePowerOfTwo(length);
+        hashTableSize = Math.min(hashTableSize, MAX_HT_SIZE);
+        final short[] table = getHashTable(hashTableSize);
+        final int shift = Integer.numberOfLeadingZeros(hashTableSize) + 1;
 
         int nextEmit = inIndex;
 
-        if (length - inIndex >= MIN_COMPRESSIBLE_BYTES) {
+        if (length >= MIN_COMPRESSIBLE_BYTES) {
             int nextHash = hash(in, ++inIndex, shift);
             outer: while (true) {
                 int skip = 32;
@@ -90,41 +118,41 @@ public final class Snappy {
                     nextIndex = inIndex + bytesBetweenHashLookups;
 
                     // We need at least 4 remaining bytes to read the hash
-                    if (nextIndex > length - 4) {
+                    if (nextIndex > endIndex - 4) {
                         break outer;
                     }
 
                     nextHash = hash(in, nextIndex, shift);
 
-                    candidate = baseIndex + table[hash];
+                    candidate = candidate(table[hash], inIndex, baseIndex);
 
                     table[hash] = (short) (inIndex - baseIndex);
                 }
-                while (in.getInt(inIndex) != in.getInt(candidate));
+                while (!isMatch(in, inIndex, candidate));
 
                 encodeLiteral(in, out, inIndex - nextEmit);
 
                 int insertTail;
                 do {
                     int base = inIndex;
-                    int matched = 4 + findMatchingLength(in, candidate + 4, inIndex + 4, length);
+                    int matched = 4 + findMatchingLength(in, candidate + 4, inIndex + 4, endIndex);
                     inIndex += matched;
                     int offset = base - candidate;
                     encodeCopy(out, offset, matched);
                     in.readerIndex(in.readerIndex() + matched);
                     insertTail = inIndex - 1;
                     nextEmit = inIndex;
-                    if (inIndex >= length - 4) {
+                    if (inIndex >= endIndex - 4) {
                         break outer;
                     }
 
                     int prevHash = hash(in, insertTail, shift);
                     table[prevHash] = (short) (inIndex - baseIndex - 1);
                     int currentHash = hash(in, insertTail + 1, shift);
-                    candidate = baseIndex + table[currentHash];
+                    candidate = candidate(table[currentHash], insertTail + 1, baseIndex);
                     table[currentHash] = (short) (inIndex - baseIndex);
                 }
-                while (in.getInt(insertTail + 1) == in.getInt(candidate));
+                while (isMatch(in, insertTail + 1, candidate));
 
                 nextHash = hash(in, insertTail + 2, shift);
                 ++inIndex;
@@ -132,9 +160,29 @@ public final class Snappy {
         }
 
         // If there are any remaining characters, write them out as a literal
-        if (nextEmit < length) {
-            encodeLiteral(in, out, length - nextEmit);
+        if (nextEmit < endIndex) {
+            encodeLiteral(in, out, endIndex - nextEmit);
         }
+    }
+
+    /**
+     * Returns the position of the closest earlier occurrence of the hash table entry, that is at most
+     * {@link #MAX_COPY_OFFSET} bytes before the index.
+     * <p>
+     * The hash table only stores the lower 16 bits of a position, so for an input longer than 65535 bytes we
+     * need to restore the upper bits from the index. The result is only a candidate and needs to be verified with
+     * {@link #isMatch(ByteBuf, int, int)}.
+     */
+    private static int candidate(short entry, int index, int baseIndex) {
+        return index - ((index - baseIndex - (entry & 0xFFFF)) & MAX_COPY_OFFSET);
+    }
+
+    /**
+     * Returns {@code true} if the candidate is before the index (so it can be referenced with a copy) and the
+     * 4 bytes at the candidate are the same as at the index.
+     */
+    private static boolean isMatch(ByteBuf in, int index, int candidate) {
+        return candidate < index && in.getInt(index) == in.getInt(candidate);
     }
 
     /**
@@ -144,7 +192,7 @@ public final class Snappy {
      * @param in The input buffer to read 4 bytes from
      * @param index The index to read at
      * @param shift The shift value, for ensuring that the resulting value is
-     *     withing the range of our hash table size
+     *     within the range of our hash table size
      * @return A 32-bit hash of 4 bytes located at index
      */
     private static int hash(ByteBuf in, int index, int shift) {
@@ -152,17 +200,35 @@ public final class Snappy {
     }
 
     /**
-     * Creates an appropriately sized hashtable for the given input size
+     * Returns a short[] to be used as a hashtable
      *
-     * @param inputSize The size of our input, ie. the number of bytes we need to encode
+     * @param hashTableSize the size for the hashtable
      * @return An appropriately sized empty hashtable
      */
-    private static short[] getHashTable(int inputSize) {
-        int htSize = 256;
-        while (htSize < MAX_HT_SIZE && htSize < inputSize) {
-            htSize <<= 1;
+    private short[] getHashTable(int hashTableSize) {
+        if (reuseHashtable) {
+            return getHashTableFastThreadLocalArrayFill(hashTableSize);
         }
-        return new short[htSize];
+        return new short[hashTableSize];
+    }
+
+    /**
+     * Returns a short[] from a FastThreadLocal, zeroing for correctness
+     * creating a new one and resizing it if necessary
+     *
+     * @return An appropriately sized empty hashtable
+     * @param hashTableSize
+     */
+    public static short[] getHashTableFastThreadLocalArrayFill(int hashTableSize) {
+        short[] hashTable = HASH_TABLE.get();
+        if (hashTable == null || hashTable.length < hashTableSize) {
+            hashTable = new short[hashTableSize];
+            HASH_TABLE.set(hashTable);
+            return hashTable;
+        }
+
+        Arrays.fill(hashTable, 0, hashTableSize, (short) 0);
+        return hashTable;
     }
 
     /**
@@ -270,9 +336,6 @@ public final class Snappy {
     public void decode(ByteBuf in, ByteBuf out) {
         while (in.isReadable()) {
             switch (state) {
-            case READY:
-                state = State.READING_PREAMBLE;
-                // fall through
             case READING_PREAMBLE:
                 int uncompressedLength = readPreamble(in);
                 if (uncompressedLength == PREAMBLE_NOT_FULL) {
@@ -281,7 +344,6 @@ public final class Snappy {
                 }
                 if (uncompressedLength == 0) {
                     // Should never happen, but it does mean we have nothing further to do
-                    state = State.READY;
                     return;
                 }
                 out.ensureWritable(uncompressedLength);
@@ -379,6 +441,27 @@ public final class Snappy {
     }
 
     /**
+     * Get the length varint (a series of bytes, where the lower 7 bits
+     * are data and the upper bit is a flag to indicate more bytes to be
+     * read).
+     *
+     * @param in The input buffer to get the preamble from
+     * @return The calculated length based on the input buffer, or 0 if
+     *   no preamble is able to be calculated
+     */
+    int getPreamble(ByteBuf in) {
+        if (state == State.READING_PREAMBLE) {
+            int readerIndex = in.readerIndex();
+            try {
+                return readPreamble(in);
+            } finally {
+                in.readerIndex(readerIndex);
+            }
+        }
+        return 0;
+    }
+
+    /**
      * Reads a literal from the input buffer directly to the output buffer.
      * A "literal" is an uncompressed segment of data stored directly in the
      * byte stream.
@@ -415,7 +498,12 @@ public final class Snappy {
             if (in.readableBytes() < 4) {
                 return NOT_ENOUGH_INPUT;
             }
-            length = in.readIntLE();
+            // The length - 1 is stored as unsigned 32-bit integer.
+            long literalLength = in.readUnsignedIntLE();
+            if (literalLength >= Integer.MAX_VALUE) {
+                throw new DecompressionException("Literal length too large: " + (literalLength + 1));
+            }
+            length = (int) literalLength;
             break;
         default:
             length = tag >> 2 & 0x3F;
@@ -646,7 +734,7 @@ public final class Snappy {
 
     /**
      * From the spec:
-     *
+     * <p>
      * "Checksums are not stored directly, but masked, as checksumming data and
      * then its own checksum can be problematic. The masking is the same as used
      * in Apache Hadoop: Rotate the checksum by 15 bits, then add the constant

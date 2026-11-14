@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -37,13 +37,14 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpScheme;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2TestUtil.FrameCountDown;
 import io.netty.util.AsciiString;
 import io.netty.util.concurrent.Future;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
@@ -62,15 +63,17 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 import static io.netty.handler.codec.http2.Http2TestUtil.of;
 import static io.netty.util.CharsetUtil.UTF_8;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyShort;
-import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -96,12 +99,12 @@ public class HttpToHttp2ConnectionHandlerTest {
     private CountDownLatch trailersLatch;
     private FrameCountDown serverFrameCountDown;
 
-    @Before
+    @BeforeEach
     public void setup() throws Exception {
         MockitoAnnotations.initMocks(this);
     }
 
-    @After
+    @AfterEach
     public void teardown() throws Exception {
         if (clientChannel != null) {
             clientChannel.close().syncUninterruptibly();
@@ -142,6 +145,29 @@ public class HttpToHttp2ConnectionHandlerTest {
                 .add(new AsciiString("foo"), new AsciiString("goo"))
                 .add(new AsciiString("foo"), new AsciiString("goo2"))
                 .add(new AsciiString("foo2"), new AsciiString("goo2"));
+
+        ChannelPromise writePromise = newPromise();
+        verifyHeadersOnly(http2Headers, writePromise, clientChannel.writeAndFlush(request, writePromise));
+    }
+
+    @Test
+    public void testHttpScheme() throws Exception {
+        bootstrapEnv(2, 1, 0);
+        final FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, GET,
+                "http://my-user_name@www.example.org:5555/example");
+        final HttpHeaders httpHeaders = request.headers();
+        httpHeaders.setInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(), 5);
+        httpHeaders.set(HttpHeaderNames.HOST, "my-user_name@www.example.org:5555");
+        httpHeaders.add(of("foo"), of("goo"));
+        httpHeaders.add(of("foo"), of("goo2"));
+        httpHeaders.add(of("foo2"), of("goo2"));
+        final Http2Headers http2Headers =
+                new DefaultHttp2Headers().method(new AsciiString("GET")).path(new AsciiString("/example"))
+                        .authority(new AsciiString("www.example.org:5555")).scheme(new AsciiString("http"))
+                        .scheme(new AsciiString("http"))
+                        .add(new AsciiString("foo"), new AsciiString("goo"))
+                        .add(new AsciiString("foo"), new AsciiString("goo2"))
+                        .add(new AsciiString("foo2"), new AsciiString("goo2"));
 
         ChannelPromise writePromise = newPromise();
         verifyHeadersOnly(http2Headers, writePromise, clientChannel.writeAndFlush(request, writePromise));
@@ -238,12 +264,35 @@ public class HttpToHttp2ConnectionHandlerTest {
     @Test
     public void testAuthorityFormRequestTargetHandled() throws Exception {
         bootstrapEnv(2, 1, 0);
-        final FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, CONNECT, "http://www.example.com:80");
+        // https://datatracker.ietf.org/doc/html/rfc9112#section-3.2.3 : the request-target for CONNECT is
+        // authority-form, i.e. host:port, not an absolute-form URI with a scheme.
+        final FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, CONNECT, "www.example.com:80");
         final HttpHeaders httpHeaders = request.headers();
         httpHeaders.setInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(), 5);
+        httpHeaders.set(HttpHeaderNames.HOST, "www.example.com:80");
+        // https://datatracker.ietf.org/doc/html/rfc9113#section-8.5 : HTTP/2 CONNECT requests must omit
+        // :scheme and :path, and carry the tunnel target in :authority.
         final Http2Headers http2Headers =
-                new DefaultHttp2Headers().method(new AsciiString("CONNECT")).path(new AsciiString("/"))
-                .scheme(new AsciiString("http")).authority(new AsciiString("www.example.com:80"));
+                new DefaultHttp2Headers().method(new AsciiString("CONNECT"))
+                .authority(new AsciiString("www.example.com:80"));
+
+        ChannelPromise writePromise = newPromise();
+        verifyHeadersOnly(http2Headers, writePromise, clientChannel.writeAndFlush(request, writePromise));
+    }
+
+    @Test
+    public void testAuthorityFormRequestTargetIgnoresConflictingHostHeader() throws Exception {
+        bootstrapEnv(2, 1, 0);
+        // A conflicting Host header must not override the CONNECT authority-form request-target when
+        // converting to HTTP/2, otherwise the HTTP/2 :authority (tunnel target) could disagree with the
+        // request-target a proxy/gateway validated against policy.
+        final FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, CONNECT, "trusted.example:443");
+        final HttpHeaders httpHeaders = request.headers();
+        httpHeaders.setInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(), 5);
+        httpHeaders.set(HttpHeaderNames.HOST, "attacker.example:443");
+        final Http2Headers http2Headers =
+                new DefaultHttp2Headers().method(new AsciiString("CONNECT"))
+                .authority(new AsciiString("trusted.example:443"));
 
         ChannelPromise writePromise = newPromise();
         verifyHeadersOnly(http2Headers, writePromise, clientChannel.writeAndFlush(request, writePromise));
@@ -333,6 +382,30 @@ public class HttpToHttp2ConnectionHandlerTest {
     }
 
     @Test
+    public void testInvalidStreamId() throws Exception {
+        bootstrapEnv(2, 1, 0);
+        final FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, POST, "/foo",
+                Unpooled.copiedBuffer("foobar", UTF_8));
+        final HttpHeaders httpHeaders = request.headers();
+        httpHeaders.setInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text(), -1);
+        httpHeaders.set(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text(), "http");
+        httpHeaders.set(HttpHeaderNames.HOST, "localhost");
+        ChannelPromise writePromise = newPromise();
+        ChannelFuture writeFuture = clientChannel.writeAndFlush(request, writePromise);
+
+        assertTrue(writePromise.awaitUninterruptibly(WAIT_TIME_SECONDS, SECONDS));
+        assertTrue(writePromise.isDone());
+        assertFalse(writePromise.isSuccess());
+        Throwable cause = writePromise.cause();
+        assertInstanceOf(Http2NoMoreStreamIdsException.class, cause);
+
+        assertTrue(writeFuture.isDone());
+        assertFalse(writeFuture.isSuccess());
+        cause = writeFuture.cause();
+        assertInstanceOf(Http2NoMoreStreamIdsException.class, cause);
+    }
+
+    @Test
     public void testRequestWithBody() throws Exception {
         final String text = "foooooogoooo";
         final List<String> receivedBuffers = Collections.synchronizedList(new ArrayList<String>());
@@ -355,7 +428,7 @@ public class HttpToHttp2ConnectionHandlerTest {
         httpHeaders.add(of("foo2"), of("goo2"));
         final Http2Headers http2Headers =
                 new DefaultHttp2Headers().method(new AsciiString("POST")).path(new AsciiString("/example"))
-                .authority(new AsciiString("www.example-origin.org:5555")).scheme(new AsciiString("http"))
+                .authority(new AsciiString("www.example.org:5555")).scheme(new AsciiString("http"))
                 .add(new AsciiString("foo"), new AsciiString("goo"))
                 .add(new AsciiString("foo"), new AsciiString("goo2"))
                 .add(new AsciiString("foo2"), new AsciiString("goo2"));
@@ -490,12 +563,18 @@ public class HttpToHttp2ConnectionHandlerTest {
         awaitRequests();
         verify(serverListener).onHeadersRead(any(ChannelHandlerContext.class), eq(3), eq(http2Headers), eq(0),
                 anyShort(), anyBoolean(), eq(0), eq(false));
-        verify(serverListener).onDataRead(any(ChannelHandlerContext.class), eq(3), any(ByteBuf.class), eq(0),
-                eq(false));
+        // The two HttpContent writes may or may not be coalesced into a single DATA frame by the flow controller
+        // depending on timing, so tolerate either 1 or 2 onDataRead(...) invocations and just verify the
+        // concatenation of everything that was received matches what was sent.
+        verify(serverListener, atLeastOnce()).onDataRead(any(ChannelHandlerContext.class), eq(3),
+                any(ByteBuf.class), eq(0), eq(false));
         verify(serverListener).onHeadersRead(any(ChannelHandlerContext.class), eq(3), eq(http2TrailingHeaders), eq(0),
                 anyShort(), anyBoolean(), eq(0), eq(true));
-        assertEquals(1, receivedBuffers.size());
-        assertEquals(text + text2, receivedBuffers.get(0));
+        StringBuilder receivedText = new StringBuilder();
+        for (String buffer : receivedBuffers) {
+            receivedText.append(buffer);
+        }
+        assertEquals(text + text2, receivedText.toString());
     }
 
     private void bootstrapEnv(int requestCountDown, int serverSettingsAckCount, int trailersCount) throws Exception {
@@ -520,6 +599,7 @@ public class HttpToHttp2ConnectionHandlerTest {
                 p.addLast(new HttpToHttp2ConnectionHandlerBuilder()
                            .server(true)
                            .frameListener(serverFrameCountDown)
+                           .httpScheme(HttpScheme.HTTP)
                            .build());
                 serverChannelLatch.countDown();
             }
@@ -549,7 +629,7 @@ public class HttpToHttp2ConnectionHandlerTest {
             }
         });
 
-        serverChannel = sb.bind(new LocalAddress("HttpToHttp2ConnectionHandlerTest")).sync().channel();
+        serverChannel = sb.bind(new LocalAddress(getClass())).sync().channel();
 
         ChannelFuture ccf = cb.connect(serverChannel.localAddress());
         assertTrue(ccf.awaitUninterruptibly().isSuccess());

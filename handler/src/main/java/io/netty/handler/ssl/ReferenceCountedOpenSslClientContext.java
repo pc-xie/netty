@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,9 +16,8 @@
 package io.netty.handler.ssl;
 
 import io.netty.internal.tcnative.CertificateCallback;
+import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.SuppressJava6Requirement;
-import io.netty.util.internal.logging.InternalLogger;
-import io.netty.util.internal.logging.InternalLoggerFactory;
 import io.netty.internal.tcnative.SSL;
 import io.netty.internal.tcnative.SSLContext;
 
@@ -30,6 +29,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 import javax.net.ssl.KeyManagerFactory;
@@ -48,14 +48,14 @@ import javax.security.auth.x500.X500Principal;
  * {@link ReferenceCountedOpenSslEngine} is called which uses this class's JNI resources the JVM may crash.
  */
 public final class ReferenceCountedOpenSslClientContext extends ReferenceCountedOpenSslContext {
-    private static final InternalLogger logger =
-            InternalLoggerFactory.getInstance(ReferenceCountedOpenSslClientContext.class);
+
     private static final Set<String> SUPPORTED_KEY_TYPES = Collections.unmodifiableSet(new LinkedHashSet<String>(
             Arrays.asList(OpenSslKeyMaterialManager.KEY_TYPE_RSA,
                           OpenSslKeyMaterialManager.KEY_TYPE_DH_RSA,
                           OpenSslKeyMaterialManager.KEY_TYPE_EC,
                           OpenSslKeyMaterialManager.KEY_TYPE_EC_RSA,
                           OpenSslKeyMaterialManager.KEY_TYPE_EC_EC)));
+
     private final OpenSslSessionContext sessionContext;
 
     ReferenceCountedOpenSslClientContext(X509Certificate[] trustCertCollection, TrustManagerFactory trustManagerFactory,
@@ -63,13 +63,31 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                                          KeyManagerFactory keyManagerFactory, Iterable<String> ciphers,
                                          CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn,
                                          String[] protocols, long sessionCacheSize, long sessionTimeout,
-                                         boolean enableOcsp, String keyStore) throws SSLException {
-        super(ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout, SSL.SSL_MODE_CLIENT, keyCertChain,
-              ClientAuth.NONE, protocols, false, enableOcsp, true);
+                                         boolean enableOcsp, String keyStore, String endpointIdentificationAlgorithm,
+                                         ResumptionController resumptionController,
+                                         Map.Entry<SslContextOption<?>, Object>... options) throws SSLException {
+        this(trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword, keyManagerFactory, ciphers,
+                cipherFilter, apn, protocols, sessionCacheSize, sessionTimeout, false, enableOcsp, keyStore,
+                endpointIdentificationAlgorithm, resumptionController, options);
+    }
+
+    ReferenceCountedOpenSslClientContext(X509Certificate[] trustCertCollection, TrustManagerFactory trustManagerFactory,
+                                         X509Certificate[] keyCertChain, PrivateKey key, String keyPassword,
+                                         KeyManagerFactory keyManagerFactory, Iterable<String> ciphers,
+                                         CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn,
+                                         String[] protocols, long sessionCacheSize, long sessionTimeout,
+                                         boolean startTls, boolean enableOcsp, String keyStore,
+                                         String endpointIdentificationAlgorithm,
+                                         ResumptionController resumptionController,
+                                         Map.Entry<SslContextOption<?>, Object>... options) throws SSLException {
+        super(ciphers, cipherFilter, toNegotiator(apn), SSL.SSL_MODE_CLIENT, keyCertChain,
+              ClientAuth.NONE, protocols, startTls, endpointIdentificationAlgorithm, enableOcsp, true,
+                resumptionController, options);
         boolean success = false;
         try {
-            sessionContext = newSessionContext(this, ctx, engineMap, trustCertCollection, trustManagerFactory,
-                                               keyCertChain, key, keyPassword, keyManagerFactory, keyStore);
+            sessionContext = newSessionContext(this, ctx, engines, trustCertCollection, trustManagerFactory,
+                                               keyCertChain, key, keyPassword, keyManagerFactory, keyStore,
+                                               sessionCacheSize, sessionTimeout, resumptionController);
             success = true;
         } finally {
             if (!success) {
@@ -84,12 +102,14 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
     }
 
     static OpenSslSessionContext newSessionContext(ReferenceCountedOpenSslContext thiz, long ctx,
-                                                   OpenSslEngineMap engineMap,
+                                                   OpenSslEngineMap engines,
                                                    X509Certificate[] trustCertCollection,
                                                    TrustManagerFactory trustManagerFactory,
                                                    X509Certificate[] keyCertChain, PrivateKey key,
                                                    String keyPassword, KeyManagerFactory keyManagerFactory,
-                                                   String keyStore) throws SSLException {
+                                                   String keyStore, long sessionCacheSize, long sessionTimeout,
+                                                   ResumptionController resumptionController)
+            throws SSLException {
         if (key == null && keyCertChain != null || key != null && keyCertChain == null) {
             throw new IllegalArgumentException(
                     "Either both keyCertChain and key needs to be null or none of them");
@@ -123,9 +143,10 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                     }
 
                     if (keyMaterialProvider != null) {
-                        OpenSslKeyMaterialManager materialManager = new OpenSslKeyMaterialManager(keyMaterialProvider);
+                        OpenSslKeyMaterialManager materialManager =
+                                new OpenSslKeyMaterialManager(keyMaterialProvider, thiz.hasTmpDhKeys);
                         SSLContext.setCertificateCallback(ctx, new OpenSslClientCertificateCallback(
-                                engineMap, materialManager));
+                                engines, materialManager));
                     }
                 }
             } catch (Exception e) {
@@ -148,7 +169,8 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                             TrustManagerFactory.getDefaultAlgorithm());
                     trustManagerFactory.init((KeyStore) null);
                 }
-                final X509TrustManager manager = chooseTrustManager(trustManagerFactory.getTrustManagers());
+                final X509TrustManager manager = chooseTrustManager(
+                        trustManagerFactory.getTrustManagers(), resumptionController);
 
                 // IMPORTANT: The callbacks set for verification must be static to prevent memory leak as
                 //            otherwise the context can never be collected. This is because the JNI code holds
@@ -156,7 +178,15 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                 //
                 //            See https://github.com/netty/netty/issues/5372
 
-                setVerifyCallback(ctx, engineMap, manager);
+                if (thiz.endpointIdentificationAlgorithm != null && !thiz.endpointIdentificationAlgorithm.isEmpty() &&
+                        !useExtendedTrustManager(manager)) {
+                    throw new UnsupportedOperationException(
+                            "Endpoint identification algorithm '" + thiz.endpointIdentificationAlgorithm + "' is " +
+                            "configured but the trust manager does not support extended trust manager verification. " +
+                            "Please provide an X509ExtendedTrustManager or use the SslProvider.JDK.");
+                }
+
+                setVerifyCallback(ctx, engines, manager);
             } catch (Exception e) {
                 if (keyMaterialProvider != null) {
                     keyMaterialProvider.destroy();
@@ -164,6 +194,18 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                 throw new SSLException("unable to setup trustmanager", e);
             }
             OpenSslClientSessionContext context = new OpenSslClientSessionContext(thiz, keyMaterialProvider);
+            context.setSessionCacheEnabled(CLIENT_ENABLE_SESSION_CACHE);
+            if (sessionCacheSize > 0) {
+                context.setSessionCacheSize((int) Math.min(sessionCacheSize, Integer.MAX_VALUE));
+            }
+            if (sessionTimeout > 0) {
+                context.setSessionTimeout((int) Math.min(sessionTimeout, Integer.MAX_VALUE));
+            }
+
+            if (CLIENT_ENABLE_SESSION_TICKET) {
+                context.setTicketKeys();
+            }
+
             keyMaterialProvider = null;
             return context;
         } finally {
@@ -174,62 +216,29 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
     }
 
     @SuppressJava6Requirement(reason = "Guarded by java version check")
-    private static void setVerifyCallback(long ctx, OpenSslEngineMap engineMap, X509TrustManager manager) {
+    private static void setVerifyCallback(long ctx,
+                                          OpenSslEngineMap engines,
+                                          X509TrustManager manager) {
         // Use this to prevent an error when running on java < 7
         if (useExtendedTrustManager(manager)) {
             SSLContext.setCertVerifyCallback(ctx,
-                    new ExtendedTrustManagerVerifyCallback(engineMap, (X509ExtendedTrustManager) manager));
+                    new ExtendedTrustManagerVerifyCallback(engines, (X509ExtendedTrustManager) manager));
         } else {
-            SSLContext.setCertVerifyCallback(ctx, new TrustManagerVerifyCallback(engineMap, manager));
+            SSLContext.setCertVerifyCallback(ctx, new TrustManagerVerifyCallback(engines, manager));
         }
     }
 
-    // No cache is currently supported for client side mode.
     static final class OpenSslClientSessionContext extends OpenSslSessionContext {
         OpenSslClientSessionContext(ReferenceCountedOpenSslContext context, OpenSslKeyMaterialProvider provider) {
-            super(context, provider);
-        }
-
-        @Override
-        public void setSessionTimeout(int seconds) {
-            if (seconds < 0) {
-                throw new IllegalArgumentException();
-            }
-        }
-
-        @Override
-        public int getSessionTimeout() {
-            return 0;
-        }
-
-        @Override
-        public void setSessionCacheSize(int size)  {
-            if (size < 0) {
-                throw new IllegalArgumentException();
-            }
-        }
-
-        @Override
-        public int getSessionCacheSize() {
-            return 0;
-        }
-
-        @Override
-        public void setSessionCacheEnabled(boolean enabled) {
-            // ignored
-        }
-
-        @Override
-        public boolean isSessionCacheEnabled() {
-            return false;
+            super(context, provider, SSL.SSL_SESS_CACHE_CLIENT, new OpenSslClientSessionCache(context.engines));
         }
     }
 
     private static final class TrustManagerVerifyCallback extends AbstractCertificateVerifier {
         private final X509TrustManager manager;
 
-        TrustManagerVerifyCallback(OpenSslEngineMap engineMap, X509TrustManager manager) {
-            super(engineMap);
+        TrustManagerVerifyCallback(OpenSslEngineMap engines, X509TrustManager manager) {
+            super(engines);
             this.manager = manager;
         }
 
@@ -244,9 +253,10 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
     private static final class ExtendedTrustManagerVerifyCallback extends AbstractCertificateVerifier {
         private final X509ExtendedTrustManager manager;
 
-        ExtendedTrustManagerVerifyCallback(OpenSslEngineMap engineMap, X509ExtendedTrustManager manager) {
-            super(engineMap);
-            this.manager = OpenSslTlsv13X509ExtendedTrustManager.wrap(manager);
+        ExtendedTrustManagerVerifyCallback(OpenSslEngineMap engines,
+                                           X509ExtendedTrustManager manager) {
+            super(engines);
+            this.manager = manager;
         }
 
         @Override
@@ -257,24 +267,25 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
     }
 
     private static final class OpenSslClientCertificateCallback implements CertificateCallback {
-        private final OpenSslEngineMap engineMap;
+        private final OpenSslEngineMap engines;
         private final OpenSslKeyMaterialManager keyManagerHolder;
 
-        OpenSslClientCertificateCallback(OpenSslEngineMap engineMap, OpenSslKeyMaterialManager keyManagerHolder) {
-            this.engineMap = engineMap;
+        OpenSslClientCertificateCallback(OpenSslEngineMap engines,
+                                         OpenSslKeyMaterialManager keyManagerHolder) {
+            this.engines = engines;
             this.keyManagerHolder = keyManagerHolder;
         }
 
         @Override
         public void handle(long ssl, byte[] keyTypeBytes, byte[][] asn1DerEncodedPrincipals) throws Exception {
-            final ReferenceCountedOpenSslEngine engine = engineMap.get(ssl);
+            final ReferenceCountedOpenSslEngine engine = engines.get(ssl);
             // May be null if it was destroyed in the meantime.
             if (engine == null) {
                 return;
             }
             try {
                 final Set<String> keyTypesSet = supportedClientKeyTypes(keyTypeBytes);
-                final String[] keyTypes = keyTypesSet.toArray(new String[0]);
+                final String[] keyTypes = keyTypesSet.toArray(EmptyArrays.EMPTY_STRINGS);
                 final X500Principal[] issuers;
                 if (asn1DerEncodedPrincipals == null) {
                     issuers = null;
@@ -286,8 +297,11 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                 }
                 keyManagerHolder.setKeyMaterialClientSide(engine, keyTypes, issuers);
             } catch (Throwable cause) {
-                logger.debug("request of key failed", cause);
                 engine.initHandshakeException(cause);
+                if (cause instanceof Exception) {
+                    throw (Exception) cause;
+                }
+                throw new SSLException(cause);
             }
         }
 
@@ -317,7 +331,7 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
         }
 
         private static String clientKeyType(byte clientCertificateType) {
-            // See also http://www.ietf.org/assignments/tls-parameters/tls-parameters.xml
+            // See also https://www.ietf.org/assignments/tls-parameters/tls-parameters.xml
             switch (clientCertificateType) {
                 case CertificateCallback.TLS_CT_RSA_SIGN:
                     return OpenSslKeyMaterialManager.KEY_TYPE_RSA; // RFC rsa_sign

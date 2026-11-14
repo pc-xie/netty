@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,7 +16,8 @@
 package io.netty.channel;
 
 import io.netty.util.internal.PlatformDependent;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -26,9 +27,9 @@ import java.io.RandomAccessFile;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class DefaultFileRegionTest {
 
@@ -39,7 +40,7 @@ public class DefaultFileRegionTest {
     }
 
     private static File newFile() throws IOException {
-        File file = File.createTempFile("netty-", ".tmp");
+        File file = PlatformDependent.createTempFile("netty-", ".tmp", null);
         file.deleteOnExit();
 
         final FileOutputStream out = new FileOutputStream(file);
@@ -90,11 +91,11 @@ public class DefaultFileRegionTest {
     public void testTruncated() throws IOException  {
         File file = newFile();
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        WritableByteChannel channel = Channels.newChannel(outputStream);
+        final WritableByteChannel channel = Channels.newChannel(outputStream);
         RandomAccessFile randomAccessFile = new RandomAccessFile(file, "rw");
 
         try {
-            FileRegion region = new DefaultFileRegion(randomAccessFile.getChannel(), 0, data.length);
+            final FileRegion region = new DefaultFileRegion(randomAccessFile.getChannel(), 0, data.length);
 
             randomAccessFile.getChannel().truncate(data.length - 1024);
 
@@ -104,12 +105,12 @@ public class DefaultFileRegionTest {
             assertEquals(data.length - 1024, region.transferTo(channel, 0));
             assertEquals(data.length, region.count());
             assertEquals(data.length - 1024, region.transferred());
-            try {
-                region.transferTo(channel, data.length - 1024);
-                fail();
-            } catch (IOException expected) {
-                // expected
-            }
+            assertThrows(IOException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    region.transferTo(channel, data.length - 1024);
+                }
+            });
         } finally {
             channel.close();
 

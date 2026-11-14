@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,24 +16,40 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.util.AsciiString;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
 import static io.netty.handler.codec.http2.DefaultHttp2HeadersTest.*;
-import static org.junit.Assert.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ReadOnlyHttp2HeadersTest {
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void notKeyValuePairThrows() {
-        ReadOnlyHttp2Headers.trailers(false, new AsciiString[]{ null });
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(false, new AsciiString[]{ null });
+            }
+        });
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void nullTrailersNotAllowed() {
-        ReadOnlyHttp2Headers.trailers(false, (AsciiString[]) null);
+        assertThrows(NullPointerException.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(false, (AsciiString[]) null);
+            }
+        });
     }
 
     @Test
@@ -41,21 +57,46 @@ public class ReadOnlyHttp2HeadersTest {
         ReadOnlyHttp2Headers.trailers(false, null, null);
     }
 
-    @Test(expected = Http2Exception.class)
+    @Test
     public void nullHeaderNameValidated() {
-        ReadOnlyHttp2Headers.trailers(true, null, new AsciiString("foo"));
+        assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(true, null, new AsciiString("foo"));
+            }
+        });
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void pseudoHeaderNotAllowedAfterNonPseudoHeaders() {
-        ReadOnlyHttp2Headers.trailers(true, new AsciiString(":name"), new AsciiString("foo"),
-                                      new AsciiString("othername"), new AsciiString("goo"),
-                                      new AsciiString(":pseudo"), new AsciiString("val"));
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(true, new AsciiString(":scheme"), new AsciiString("foo"),
+                        new AsciiString("othername"), new AsciiString("goo"),
+                        new AsciiString(":path"), new AsciiString("val"));
+            }
+        });
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void nullValuesAreNotAllowed() {
-        ReadOnlyHttp2Headers.trailers(true, new AsciiString("foo"), null);
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(true, new AsciiString("foo"), null);
+            }
+        });
+    }
+
+    @Test
+    public void illegalValuesAreNotAllowed() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                ReadOnlyHttp2Headers.trailers(true, new AsciiString("foo"), new AsciiString("ba\nr"));
+            }
+        });
     }
 
     @Test
@@ -75,34 +116,64 @@ public class ReadOnlyHttp2HeadersTest {
         verifyPseudoHeadersFirst(headers);
     }
 
-    @Test(expected = UnsupportedOperationException.class)
+    @Test
     public void testIteratorReadOnlyClient() {
-        testIteratorReadOnly(newClientHeaders());
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() {
+                testIteratorReadOnly(newClientHeaders());
+            }
+        });
     }
 
-    @Test(expected = UnsupportedOperationException.class)
+    @Test
     public void testIteratorReadOnlyServer() {
-        testIteratorReadOnly(newServerHeaders());
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() {
+                testIteratorReadOnly(newServerHeaders());
+            }
+        });
     }
 
-    @Test(expected = UnsupportedOperationException.class)
+    @Test
     public void testIteratorReadOnlyTrailers() {
-        testIteratorReadOnly(newTrailers());
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() {
+                testIteratorReadOnly(newTrailers());
+            }
+        });
     }
 
-    @Test(expected = UnsupportedOperationException.class)
+    @Test
     public void testIteratorEntryReadOnlyClient() {
-        testIteratorEntryReadOnly(newClientHeaders());
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() {
+                testIteratorEntryReadOnly(newClientHeaders());
+            }
+        });
     }
 
-    @Test(expected = UnsupportedOperationException.class)
+    @Test
     public void testIteratorEntryReadOnlyServer() {
-        testIteratorEntryReadOnly(newServerHeaders());
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() {
+                testIteratorEntryReadOnly(newServerHeaders());
+            }
+        });
     }
 
-    @Test(expected = UnsupportedOperationException.class)
+    @Test
     public void testIteratorEntryReadOnlyTrailers() {
-        testIteratorEntryReadOnly(newTrailers());
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() {
+                testIteratorEntryReadOnly(newTrailers());
+            }
+        });
     }
 
     @Test
@@ -145,6 +216,31 @@ public class ReadOnlyHttp2HeadersTest {
     }
 
     @Test
+    public void testContainsFloat() {
+        Http2Headers headers = ReadOnlyHttp2Headers.trailers(true,
+                AsciiString.cached("float"), AsciiString.cached("1.5"),
+                AsciiString.cached("float"), AsciiString.cached("0.1"));
+
+        assertThat(headers.containsFloat("float", 1.5f)).isTrue();
+        assertThat(headers.containsFloat("float", 0.1f)).isTrue();
+        assertThat(headers.containsFloat("float", 2.0f)).isFalse();
+        assertThat(headers.containsFloat("missing", 1.5f)).isFalse();
+    }
+
+    @Test
+    public void testContainsTimeMillis() {
+        long millis = 784111777000L;
+        Http2Headers headers = ReadOnlyHttp2Headers.serverHeaders(true, AsciiString.cached("200"),
+                AsciiString.cached("date"), AsciiString.cached("Sun, 06 Nov 1994 08:49:37 GMT"),
+                AsciiString.cached("x-epoch-millis"), AsciiString.cached(Long.toString(millis)));
+
+        assertThat(headers.getTimeMillis("date")).isEqualTo(millis);
+        assertThat(headers.containsTimeMillis("date", millis)).isTrue();
+        assertThat(headers.containsTimeMillis("date", millis + 1000)).isFalse();
+        assertThat(headers.containsTimeMillis("x-epoch-millis", millis)).isFalse();
+    }
+
+    @Test
     public void testGet() {
         Http2Headers headers = newClientHeaders();
         assertTrue(AsciiString.contentEqualsIgnoreCase("value1", headers.get("Name1")));
@@ -172,29 +268,49 @@ public class ReadOnlyHttp2HeadersTest {
     @Test
     public void testEmptyValueIterator() {
         Http2Headers headers = newServerHeaders();
-        Iterator<CharSequence> itr = headers.valueIterator("foo");
+        final Iterator<CharSequence> itr = headers.valueIterator("foo");
         assertFalse(itr.hasNext());
-        try {
-            itr.next();
-            fail();
-        } catch (NoSuchElementException ignored) {
-            // ignored
-        }
+        assertThrows(NoSuchElementException.class, new Executable() {
+            @Override
+            public void execute() {
+                itr.next();
+            }
+        });
     }
 
     @Test
     public void testIteratorMultipleValues() {
-        Http2Headers headers = ReadOnlyHttp2Headers.serverHeaders(false, new AsciiString("200"), new AsciiString[] {
+        Http2Headers headers = ReadOnlyHttp2Headers.serverHeaders(false, new AsciiString("200"),
                 new AsciiString("name2"), new AsciiString("value1"),
                 new AsciiString("name1"), new AsciiString("value2"),
-                new AsciiString("name2"), new AsciiString("value3")
-        });
+                new AsciiString("name2"), new AsciiString("value3"));
         Iterator<CharSequence> itr = headers.valueIterator("name2");
         assertTrue(itr.hasNext());
         assertTrue(AsciiString.contentEqualsIgnoreCase("value1", itr.next()));
         assertTrue(itr.hasNext());
         assertTrue(AsciiString.contentEqualsIgnoreCase("value3", itr.next()));
         assertFalse(itr.hasNext());
+    }
+
+    @Test
+    public void testGetNotConvertible() {
+        Http2Headers headers = ReadOnlyHttp2Headers.trailers(false,
+                new AsciiString("not-a-number"), new AsciiString("not a number"),
+                new AsciiString("empty"), AsciiString.EMPTY_STRING);
+        assertNull(headers.getByte("not-a-number"));
+        assertEquals((byte) -1, headers.getByte("not-a-number", (byte) -1));
+        assertNull(headers.getChar("empty"));
+        assertEquals('x', headers.getChar("empty", 'x'));
+        assertNull(headers.getShort("not-a-number"));
+        assertEquals((short) -1, headers.getShort("not-a-number", (short) -1));
+        assertNull(headers.getInt("not-a-number"));
+        assertEquals(-1, headers.getInt("not-a-number", -1));
+        assertNull(headers.getLong("not-a-number"));
+        assertEquals(-1L, headers.getLong("not-a-number", -1));
+        assertNull(headers.getFloat("not-a-number"));
+        assertEquals(-1f, headers.getFloat("not-a-number", -1), 0);
+        assertNull(headers.getDouble("not-a-number"));
+        assertEquals(-1d, headers.getDouble("not-a-number", -1), 0);
     }
 
     private static void testValueIteratorSingleValue(Http2Headers headers, CharSequence name, CharSequence value) {

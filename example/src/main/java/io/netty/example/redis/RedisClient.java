@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -52,7 +52,7 @@ public class RedisClient {
                      ChannelPipeline p = ch.pipeline();
                      p.addLast(new RedisDecoder());
                      p.addLast(new RedisBulkStringAggregator());
-                     p.addLast(new RedisArrayAggregator());
+                     p.addLast(new RedisArrayAggregator(1000000, 1024));
                      p.addLast(new RedisEncoder());
                      p.addLast(new RedisClientHandler());
                  }

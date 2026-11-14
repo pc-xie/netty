@@ -5,20 +5,27 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  * License for the specific language governing permissions and limitations
  * under the License.
- */package io.netty.buffer;
+ */
+package io.netty.buffer;
 
 import io.netty.util.CharsetUtil;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class EmptyByteBufTest {
 
@@ -37,14 +44,16 @@ public class EmptyByteBufTest {
 
     @Test
     public void testWriteEmptyByteBuf() {
-        EmptyByteBuf empty = new EmptyByteBuf(UnpooledByteBufAllocator.DEFAULT);
+        final EmptyByteBuf empty = new EmptyByteBuf(UnpooledByteBufAllocator.DEFAULT);
         empty.writeBytes(Unpooled.EMPTY_BUFFER); // Ok
-        ByteBuf nonEmpty = UnpooledByteBufAllocator.DEFAULT.buffer().writeBoolean(false);
+        final ByteBuf nonEmpty = UnpooledByteBufAllocator.DEFAULT.buffer().writeBoolean(false);
         try {
-            empty.writeBytes(nonEmpty);
-            fail();
-        } catch (IndexOutOfBoundsException ignored) {
-            // Ignore.
+            assertThrows(IndexOutOfBoundsException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    empty.writeBytes(nonEmpty);
+                }
+            });
         } finally {
             nonEmpty.release();
         }
@@ -60,26 +69,25 @@ public class EmptyByteBufTest {
     @Test
     public void testArray() {
         EmptyByteBuf empty = new EmptyByteBuf(UnpooledByteBufAllocator.DEFAULT);
-        assertThat(empty.hasArray(), is(true));
-        assertThat(empty.array().length, is(0));
-        assertThat(empty.arrayOffset(), is(0));
+        assertTrue(empty.hasArray());
+        assertEquals(0, empty.array().length);
+        assertEquals(0, empty.arrayOffset());
     }
 
     @Test
     public void testNioBuffer() {
         EmptyByteBuf empty = new EmptyByteBuf(UnpooledByteBufAllocator.DEFAULT);
-        assertThat(empty.nioBufferCount(), is(1));
-        assertThat(empty.nioBuffer().position(), is(0));
-        assertThat(empty.nioBuffer().limit(), is(0));
-        assertThat(empty.nioBuffer(), is(sameInstance(empty.nioBuffer())));
-        assertThat(empty.nioBuffer(), is(sameInstance(empty.internalNioBuffer(empty.readerIndex(), 0))));
+        assertEquals(1, empty.nioBufferCount());
+        assertEquals(0, empty.nioBuffer().position());
+        assertEquals(0, empty.nioBuffer().limit());
+        assertSame(empty.nioBuffer(), empty.internalNioBuffer(empty.readerIndex(), 0));
     }
 
     @Test
     public void testMemoryAddress() {
         EmptyByteBuf empty = new EmptyByteBuf(UnpooledByteBufAllocator.DEFAULT);
         if (empty.hasMemoryAddress()) {
-            assertThat(empty.memoryAddress(), is(not(0L)));
+            assertNotEquals(0L, empty.memoryAddress());
         } else {
             try {
                 empty.memoryAddress();

@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -20,27 +20,31 @@ import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.EventExecutor;
-import junit.framework.AssertionFailedError;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+import org.opentest4j.AssertionFailedError;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.CONNECTION_STREAM_ID;
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_PRIORITY_WEIGHT;
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_WINDOW_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_INITIAL_WINDOW_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_WEIGHT;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_WEIGHT;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static io.netty.handler.codec.http2.Http2Error.FLOW_CONTROL_ERROR;
+import static io.netty.handler.codec.http2.Http2Exception.isStreamError;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.atLeastOnce;
@@ -52,7 +56,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -86,7 +90,7 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
 
     private DefaultHttp2Connection connection;
 
-    @Before
+    @BeforeEach
     public void setup() throws Http2Exception {
         MockitoAnnotations.initMocks(this);
 
@@ -132,6 +136,68 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
     }
 
     @Test
+    public void initialWindowSizeMayReachMaxValue() throws Http2Exception {
+        incrementWindowSize(STREAM_C, Integer.MAX_VALUE - DEFAULT_WINDOW_SIZE - 1);
+
+        controller.initialWindowSize(DEFAULT_WINDOW_SIZE + 1);
+
+        assertEquals(Integer.MAX_VALUE, window(STREAM_C));
+        assertEquals(DEFAULT_WINDOW_SIZE + 1, window(STREAM_A));
+        assertEquals(DEFAULT_WINDOW_SIZE + 1, window(STREAM_B));
+        assertEquals(DEFAULT_WINDOW_SIZE + 1, window(STREAM_D));
+        assertEquals(DEFAULT_WINDOW_SIZE, window(CONNECTION_STREAM_ID));
+    }
+
+    @Test
+    public void initialWindowSizeOverflowShouldThrowConnectionError() throws Http2Exception {
+        incrementWindowSize(STREAM_C, Integer.MAX_VALUE - DEFAULT_WINDOW_SIZE);
+
+        Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Http2Exception {
+                controller.initialWindowSize(DEFAULT_WINDOW_SIZE + 1);
+            }
+        });
+
+        assertEquals(FLOW_CONTROL_ERROR, e.error());
+        assertFalse(isStreamError(e));
+        assertEquals(Integer.MAX_VALUE, window(STREAM_C));
+        assertEquals(DEFAULT_WINDOW_SIZE, window(CONNECTION_STREAM_ID));
+    }
+
+    @Test
+    public void windowUpdateOverflowShouldThrowStreamError() throws Http2Exception {
+        incrementWindowSize(STREAM_A, Integer.MAX_VALUE - DEFAULT_WINDOW_SIZE);
+
+        Http2Exception.StreamException e = assertThrows(Http2Exception.StreamException.class, new Executable() {
+            @Override
+            public void execute() throws Http2Exception {
+                incrementWindowSize(STREAM_A, 1);
+            }
+        });
+
+        assertEquals(FLOW_CONTROL_ERROR, e.error());
+        assertEquals(STREAM_A, e.streamId());
+        assertEquals(Integer.MAX_VALUE, window(STREAM_A));
+    }
+
+    @Test
+    public void windowUpdateOverflowShouldThrowConnectionError() throws Http2Exception {
+        incrementWindowSize(CONNECTION_STREAM_ID, Integer.MAX_VALUE - DEFAULT_WINDOW_SIZE);
+
+        Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Http2Exception {
+                incrementWindowSize(CONNECTION_STREAM_ID, 1);
+            }
+        });
+
+        assertEquals(FLOW_CONTROL_ERROR, e.error());
+        assertFalse(isStreamError(e));
+        assertEquals(Integer.MAX_VALUE, window(CONNECTION_STREAM_ID));
+    }
+
+    @Test
     public void windowUpdateShouldChangeConnectionWindow() throws Http2Exception {
         incrementWindowSize(CONNECTION_STREAM_ID, 100);
         assertEquals(DEFAULT_WINDOW_SIZE + 100, window(CONNECTION_STREAM_ID));
@@ -139,7 +205,7 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         assertEquals(DEFAULT_WINDOW_SIZE, window(STREAM_B));
         assertEquals(DEFAULT_WINDOW_SIZE, window(STREAM_C));
         assertEquals(DEFAULT_WINDOW_SIZE, window(STREAM_D));
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -150,7 +216,7 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         assertEquals(DEFAULT_WINDOW_SIZE, window(STREAM_B));
         assertEquals(DEFAULT_WINDOW_SIZE, window(STREAM_C));
         assertEquals(DEFAULT_WINDOW_SIZE, window(STREAM_D));
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -158,10 +224,10 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         FakeFlowControlled data = new FakeFlowControlled(5);
         sendData(STREAM_A, data);
         data.assertNotWritten();
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
         controller.writePendingBytes();
         data.assertFullyWritten();
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -171,7 +237,7 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         data.assertNotWritten();
         controller.writePendingBytes();
         data.assertFullyWritten();
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -237,7 +303,7 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         sendData(STREAM_A, moreData);
         controller.writePendingBytes();
         moreData.assertNotWritten();
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -259,7 +325,7 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         connection.stream(STREAM_A).close();
         data.assertError(Http2Error.STREAM_CLOSED);
         moreData.assertError(Http2Error.STREAM_CLOSED);
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -723,32 +789,30 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
     public void flowControlledWriteAndErrorThrowAnException() throws Exception {
         final Http2RemoteFlowController.FlowControlled flowControlled = mockedFlowControlledThatThrowsOnWrite();
         final Http2Stream stream = stream(STREAM_A);
-        final RuntimeException fakeException = new RuntimeException("error failed");
         doAnswer(new Answer<Void>() {
             @Override
             public Void answer(InvocationOnMock invocationOnMock) {
-                throw fakeException;
+                throw Http2TestUtil.FAKE_EXCEPTION;
             }
         }).when(flowControlled).error(any(ChannelHandlerContext.class), any(Throwable.class));
 
         int windowBefore = window(STREAM_A);
 
-        try {
-            controller.addFlowControlled(stream, flowControlled);
-            controller.writePendingBytes();
-            fail();
-        } catch (Http2Exception e) {
-            assertSame(fakeException, e.getCause());
-        } catch (Throwable t) {
-            fail();
-        }
+        Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.addFlowControlled(stream, flowControlled);
+                controller.writePendingBytes();
+            }
+        });
+        assertSame(Http2TestUtil.FAKE_EXCEPTION, e.getCause());
 
         verify(flowControlled, atLeastOnce()).write(any(ChannelHandlerContext.class), anyInt());
         verify(flowControlled).error(any(ChannelHandlerContext.class), any(Throwable.class));
         verify(flowControlled, never()).writeComplete();
 
         assertEquals(90, windowBefore - window(STREAM_A));
-        verifyZeroInteractions(listener);
+        verifyNoInteractions(listener);
     }
 
     @Test
@@ -908,34 +972,178 @@ public abstract class DefaultHttp2RemoteFlowControllerTest {
         dataA.assertFullyWritten();
     }
 
-    @Test(expected = AssertionError.class)
+    @Test
+    public void windowUpdateForReservedStreamShouldBeKeptWhenActivated() throws Http2Exception {
+        Http2Stream pushStream = reservePushStreamOnServer();
+        assertEquals(0, controller.windowSize(pushStream));
+
+        // The peer may send WINDOW_UPDATE for a stream that is reserved (local), see RFC 9113, section 5.1.
+        controller.incrementWindowSize(pushStream, 100);
+        pushStream.open(false);
+        assertEquals(DEFAULT_WINDOW_SIZE + 100, controller.windowSize(pushStream));
+    }
+
+    @Test
+    public void initialWindowSizeChangeForReservedStreamShouldBeAppliedWhenActivated() throws Http2Exception {
+        Http2Stream pushStream = reservePushStreamOnServer();
+
+        // The peer only grants credit for the pushed stream via WINDOW_UPDATE.
+        controller.initialWindowSize(0);
+        reset(listener);
+        controller.incrementWindowSize(pushStream, 100);
+        // The credit already makes the reserved stream writable, and the listener is told so.
+        verify(listener, times(1)).writabilityChanged(pushStream);
+        assertTrue(controller.isWritable(pushStream));
+        reset(listener);
+
+        pushStream.open(false);
+        // Activation keeps the credit, so the stream stays writable and the listener is not told otherwise.
+        verify(listener, never()).writabilityChanged(pushStream);
+        assertTrue(controller.isWritable(pushStream));
+        assertEquals(100, controller.windowSize(pushStream));
+
+        FakeFlowControlled data = new FakeFlowControlled(100);
+        controller.addFlowControlled(pushStream, data);
+        controller.writePendingBytes();
+        data.assertFullyWritten();
+    }
+
+    @Test
+    public void initialWindowSizeChangeAndWindowUpdateForReservedStreamShouldBeAddedWhenActivated()
+            throws Http2Exception {
+        Http2Stream pushStream = reservePushStreamOnServer();
+
+        // SETTINGS_INITIAL_WINDOW_SIZE is only applied to active streams, so the reserved stream only holds the
+        // credit from the WINDOW_UPDATE until it is activated.
+        controller.initialWindowSize(1000);
+        controller.incrementWindowSize(pushStream, 100);
+        assertEquals(100, controller.windowSize(pushStream));
+        pushStream.open(false);
+        assertEquals(1100, controller.windowSize(pushStream));
+    }
+
+    @Test
+    public void windowUpdateThatOverflowsReservedStreamWhenActivatedShouldFail() throws Http2Exception {
+        final Http2Stream pushStream = reservePushStreamOnServer();
+        // The initialWindowSize is added when the stream becomes active, so this is the most credit it can take.
+        controller.incrementWindowSize(pushStream, MAX_INITIAL_WINDOW_SIZE - DEFAULT_WINDOW_SIZE);
+
+        Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.incrementWindowSize(pushStream, 1);
+            }
+        });
+        assertTrue(e instanceof Http2Exception.StreamException);
+        assertEquals(Http2Error.FLOW_CONTROL_ERROR, e.error());
+        assertEquals(MAX_INITIAL_WINDOW_SIZE - DEFAULT_WINDOW_SIZE, controller.windowSize(pushStream));
+
+        pushStream.open(false);
+        assertEquals(MAX_INITIAL_WINDOW_SIZE, controller.windowSize(pushStream));
+    }
+
+    @Test
+    public void windowUpdateForReservedStreamShouldFailIfInitialWindowSizeLeavesNoRoom() throws Http2Exception {
+        final Http2Stream pushStream = reservePushStreamOnServer();
+        controller.initialWindowSize(MAX_INITIAL_WINDOW_SIZE);
+
+        Http2Exception e = assertThrows(Http2Exception.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.incrementWindowSize(pushStream, 1);
+            }
+        });
+        assertTrue(e instanceof Http2Exception.StreamException);
+        assertEquals(Http2Error.FLOW_CONTROL_ERROR, e.error());
+        assertEquals(0, controller.windowSize(pushStream));
+
+        pushStream.open(false);
+        assertEquals(MAX_INITIAL_WINDOW_SIZE, controller.windowSize(pushStream));
+    }
+
+    @Test
+    public void initialWindowSizeChangeThatOverflowsReservedStreamIsClampedWhenActivated() throws Http2Exception {
+        Http2Stream pushStream = reservePushStreamOnServer();
+        controller.incrementWindowSize(pushStream, 1000);
+        // A SETTINGS_INITIAL_WINDOW_SIZE increase after the credit was granted is not rejected, as only active
+        // streams are checked when it is applied (a connection error for those, see RFC 9113, section 6.9.2).
+        controller.initialWindowSize(MAX_INITIAL_WINDOW_SIZE);
+        assertEquals(1000, controller.windowSize(pushStream));
+        assertEquals(MAX_INITIAL_WINDOW_SIZE, controller.windowSize(stream(STREAM_A)));
+
+        // The window is clamped (and a warning is logged) when the stream becomes active.
+        pushStream.open(false);
+        assertEquals(MAX_INITIAL_WINDOW_SIZE, controller.windowSize(pushStream));
+    }
+
+    private Http2Stream reservePushStreamOnServer() throws Http2Exception {
+        connection = new DefaultHttp2Connection(true);
+        controller = new DefaultHttp2RemoteFlowController(connection, newDistributor(connection), listener);
+        connection.remote().flowController(controller);
+        controller.channelHandlerContext(ctx);
+
+        Http2Stream parent = connection.remote().createStream(STREAM_A, false);
+        return connection.local().reservePushStream(2, parent);
+    }
+
+    @Test
     public void invalidParentStreamIdThrows() {
-        controller.updateDependencyTree(STREAM_D, -1, DEFAULT_PRIORITY_WEIGHT, true);
+        assertThrows(AssertionError.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.updateDependencyTree(STREAM_D, -1, DEFAULT_PRIORITY_WEIGHT, true);
+            }
+        });
     }
 
-    @Test(expected = AssertionError.class)
+    @Test
     public void invalidChildStreamIdThrows() {
-        controller.updateDependencyTree(-1, STREAM_D, DEFAULT_PRIORITY_WEIGHT, true);
+        assertThrows(AssertionError.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.updateDependencyTree(-1, STREAM_D, DEFAULT_PRIORITY_WEIGHT, true);
+            }
+        });
     }
 
-    @Test(expected = AssertionError.class)
+    @Test
     public void connectionChildStreamIdThrows() {
-        controller.updateDependencyTree(0, STREAM_D, DEFAULT_PRIORITY_WEIGHT, true);
+        assertThrows(AssertionError.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.updateDependencyTree(0, STREAM_D, DEFAULT_PRIORITY_WEIGHT, true);
+            }
+        });
     }
 
-    @Test(expected = AssertionError.class)
+    @Test
     public void invalidWeightTooSmallThrows() {
-        controller.updateDependencyTree(STREAM_A, STREAM_D, (short) (MIN_WEIGHT - 1), true);
+        assertThrows(AssertionError.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.updateDependencyTree(STREAM_A, STREAM_D, (short) (MIN_WEIGHT - 1), true);
+            }
+        });
     }
 
-    @Test(expected = AssertionError.class)
+    @Test
     public void invalidWeightTooBigThrows() {
-        controller.updateDependencyTree(STREAM_A, STREAM_D, (short) (MAX_WEIGHT + 1), true);
+        assertThrows(AssertionError.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.updateDependencyTree(STREAM_A, STREAM_D, (short) (MAX_WEIGHT + 1), true);
+            }
+        });
     }
 
-    @Test(expected = AssertionError.class)
+    @Test
     public void dependencyOnSelfThrows() {
-        controller.updateDependencyTree(STREAM_A, STREAM_A, DEFAULT_PRIORITY_WEIGHT, true);
+        assertThrows(AssertionError.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                controller.updateDependencyTree(STREAM_A, STREAM_A, DEFAULT_PRIORITY_WEIGHT, true);
+            }
+        });
     }
 
     private void assertWritabilityChanged(int amt, boolean writable) {

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -15,12 +15,17 @@
  */
 package io.netty.buffer;
 
-import org.junit.Test;
+import io.netty.util.CharsetUtil;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.mockito.Mockito;
 
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.CharBuffer;
 import java.nio.channels.ScatteringByteChannel;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,7 +34,11 @@ import java.util.Map.Entry;
 
 import static io.netty.buffer.Unpooled.*;
 import static io.netty.util.internal.EmptyArrays.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests channel buffers
@@ -309,6 +318,60 @@ public class UnpooledTest {
     }
 
     @Test
+    public void testCopiedBufferUtf8() {
+        testCopiedBufferCharSequence("Some UTF_8 like äÄ∏ŒŒ", CharsetUtil.UTF_8);
+    }
+
+    @Test
+    public void testCopiedBufferAscii() {
+        testCopiedBufferCharSequence("Some US_ASCII", CharsetUtil.US_ASCII);
+    }
+
+    @Test
+    public void testCopiedBufferSomeOtherCharset() {
+        testCopiedBufferCharSequence("Some ISO_8859_1", CharsetUtil.ISO_8859_1);
+    }
+
+    private static void testCopiedBufferCharSequence(CharSequence sequence, Charset charset) {
+        ByteBuf copied = copiedBuffer(sequence, charset);
+        try {
+            assertEquals(sequence, copied.toString(charset));
+        } finally {
+            copied.release();
+        }
+    }
+
+    @Test
+    public void testCopiedBufferCharBufferRegion() {
+        // CharBuffer.wrap(CharSequence) and read-only buffers are not backed by an accessible array.
+        testCopiedBufferCharBufferRegion(CharBuffer.wrap("hello world"));
+        testCopiedBufferCharBufferRegion(CharBuffer.wrap("hello world".toCharArray()).asReadOnlyBuffer());
+        // Array backed.
+        testCopiedBufferCharBufferRegion(CharBuffer.wrap("hello world".toCharArray()));
+    }
+
+    private static void testCopiedBufferCharBufferRegion(CharBuffer buffer) {
+        assertCopiedBufferRegion("llo w", buffer, 2, 5);
+        assertCopiedBufferRegion("world", buffer, 6, 5);
+
+        // The offset is relative to the position of the buffer.
+        buffer.position(1);
+        assertCopiedBufferRegion("lo wo", buffer, 2, 5);
+        assertCopiedBufferRegion("world", buffer, 5, 5);
+        assertEquals(1, buffer.position());
+        assertEquals(11, buffer.limit());
+    }
+
+    private static void assertCopiedBufferRegion(String expected, CharBuffer buffer, int offset, int length) {
+        ByteBuf copied = copiedBuffer(buffer, offset, length, CharsetUtil.US_ASCII);
+        try {
+            assertEquals(expected, copied.toString(CharsetUtil.US_ASCII));
+        } finally {
+            copied.release();
+        }
+    }
+
+    @Test
     public void testCopiedBuffer() {
         ByteBuf copied = copiedBuffer(ByteBuffer.allocateDirect(16));
         assertEquals(16, copied.capacity());
@@ -371,88 +434,88 @@ public class UnpooledTest {
 
     @Test
     public void testUnmodifiableBuffer() throws Exception {
-        ByteBuf buf = unmodifiableBuffer(buffer(16));
+        final ByteBuf buf = unmodifiableBuffer(buffer(16));
 
-        try {
-            buf.discardReadBytes();
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.discardReadBytes();
+            }
+        });
 
-        try {
-            buf.setByte(0, (byte) 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setByte(0, (byte) 0);
+            }
+        });
 
-        try {
-            buf.setBytes(0, EMPTY_BUFFER, 0, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setBytes(0, EMPTY_BUFFER, 0, 0);
+            }
+        });
 
-        try {
-            buf.setBytes(0, EMPTY_BYTES, 0, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setBytes(0, EMPTY_BYTES, 0, 0);
+            }
+        });
 
-        try {
-            buf.setBytes(0, ByteBuffer.allocate(0));
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setBytes(0, ByteBuffer.allocate(0));
+            }
+        });
 
-        try {
-            buf.setShort(0, (short) 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setShort(0, (short) 0);
+            }
+        });
 
-        try {
-            buf.setMedium(0, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setMedium(0, 0);
+            }
+        });
 
-        try {
-            buf.setInt(0, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setInt(0, 0);
+            }
+        });
 
-        try {
-            buf.setLong(0, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setLong(0, 0);
+            }
+        });
 
-        InputStream inputStream = Mockito.mock(InputStream.class);
-        try {
-            buf.setBytes(0, inputStream, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
-        Mockito.verifyZeroInteractions(inputStream);
+        final InputStream inputStream = Mockito.mock(InputStream.class);
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setBytes(0, inputStream, 0);
+            }
+        });
+        Mockito.verifyNoInteractions(inputStream);
 
-        ScatteringByteChannel scatteringByteChannel = Mockito.mock(ScatteringByteChannel.class);
-        try {
-            buf.setBytes(0, scatteringByteChannel, 0);
-            fail();
-        } catch (UnsupportedOperationException e) {
-            // Expected
-        }
-        Mockito.verifyZeroInteractions(scatteringByteChannel);
+        final ScatteringByteChannel scatteringByteChannel = Mockito.mock(ScatteringByteChannel.class);
+        assertThrows(UnsupportedOperationException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buf.setBytes(0, scatteringByteChannel, 0);
+            }
+        });
+        Mockito.verifyNoInteractions(scatteringByteChannel);
         buf.release();
     }
 
@@ -668,11 +731,16 @@ public class UnpooledTest {
         wrapped.release();
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void skipBytesNegativeLength() {
-        ByteBuf buf = buffer(8);
+        final ByteBuf buf = buffer(8);
         try {
-            buf.skipBytes(-1);
+            assertThrows(IllegalArgumentException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    buf.skipBytes(-1);
+                }
+            });
         } finally {
             buf.release();
         }
@@ -696,29 +764,88 @@ public class UnpooledTest {
         assertEquals(0, wrapped.refCnt());
     }
 
-    @Test(expected = IndexOutOfBoundsException.class)
+    @Test
     public void testGetBytesByteBuffer() {
         byte[] bytes = {'a', 'b', 'c', 'd', 'e', 'f', 'g'};
         // Ensure destination buffer is bigger then what is wrapped in the ByteBuf.
-        ByteBuffer nioBuffer = ByteBuffer.allocate(bytes.length + 1);
-        ByteBuf wrappedBuffer = wrappedBuffer(bytes);
+        final ByteBuffer nioBuffer = ByteBuffer.allocate(bytes.length + 1);
+        final ByteBuf wrappedBuffer = wrappedBuffer(bytes);
         try {
-            wrappedBuffer.getBytes(wrappedBuffer.readerIndex(), nioBuffer);
+            assertThrows(IndexOutOfBoundsException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    wrappedBuffer.getBytes(wrappedBuffer.readerIndex(), nioBuffer);
+                }
+            });
         } finally {
             wrappedBuffer.release();
         }
     }
 
-    @Test(expected = IndexOutOfBoundsException.class)
+    @Test
     public void testGetBytesByteBuffer2() {
         byte[] bytes = {'a', 'b', 'c', 'd', 'e', 'f', 'g'};
         // Ensure destination buffer is bigger then what is wrapped in the ByteBuf.
-        ByteBuffer nioBuffer = ByteBuffer.allocate(bytes.length + 1);
-        ByteBuf wrappedBuffer = wrappedBuffer(bytes, 0, bytes.length);
+        final ByteBuffer nioBuffer = ByteBuffer.allocate(bytes.length + 1);
+        final ByteBuf wrappedBuffer = wrappedBuffer(bytes, 0, bytes.length);
         try {
-            wrappedBuffer.getBytes(wrappedBuffer.readerIndex(), nioBuffer);
+            assertThrows(IndexOutOfBoundsException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    wrappedBuffer.getBytes(wrappedBuffer.readerIndex(), nioBuffer);
+                }
+            });
         } finally {
             wrappedBuffer.release();
         }
+    }
+
+    @SuppressWarnings("deprecation")
+    @Test
+    public void littleEndianWriteOnLittleEndianBufferMustStoreLittleEndianValue() {
+        ByteBuf b = buffer(1024).order(ByteOrder.LITTLE_ENDIAN);
+
+        b.writeShortLE(0x0102);
+        assertEquals((short) 0x0102, b.getShortLE(0));
+        assertEquals((short) 0x0102, b.getShort(0));
+        b.clear();
+
+        b.writeMediumLE(0x010203);
+        assertEquals(0x010203, b.getMediumLE(0));
+        assertEquals(0x010203, b.getMedium(0));
+        b.clear();
+
+        b.writeIntLE(0x01020304);
+        assertEquals(0x01020304, b.getIntLE(0));
+        assertEquals(0x01020304, b.getInt(0));
+        b.clear();
+
+        b.writeLongLE(0x0102030405060708L);
+        assertEquals(0x0102030405060708L, b.getLongLE(0));
+        assertEquals(0x0102030405060708L, b.getLong(0));
+    }
+
+    @Test
+    public void littleEndianWriteOnDefaultBufferMustStoreLittleEndianValue() {
+        ByteBuf b = buffer(1024);
+
+        b.writeShortLE(0x0102);
+        assertEquals((short) 0x0102, b.getShortLE(0));
+        assertEquals((short) 0x0201, b.getShort(0));
+        b.clear();
+
+        b.writeMediumLE(0x010203);
+        assertEquals(0x010203, b.getMediumLE(0));
+        assertEquals(0x030201, b.getMedium(0));
+        b.clear();
+
+        b.writeIntLE(0x01020304);
+        assertEquals(0x01020304, b.getIntLE(0));
+        assertEquals(0x04030201, b.getInt(0));
+        b.clear();
+
+        b.writeLongLE(0x0102030405060708L);
+        assertEquals(0x0102030405060708L, b.getLongLE(0));
+        assertEquals(0x0807060504030201L, b.getLong(0));
     }
 }

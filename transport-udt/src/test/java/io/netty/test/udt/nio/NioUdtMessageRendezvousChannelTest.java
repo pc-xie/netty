@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,8 +16,6 @@
 
 package io.netty.test.udt.nio;
 
-import com.yammer.metrics.Metrics;
-import com.yammer.metrics.core.Meter;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -27,14 +25,17 @@ import io.netty.test.udt.util.EchoMessageHandler;
 import io.netty.test.udt.util.UnitHelp;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-import org.junit.Ignore;
-import org.junit.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class NioUdtMessageRendezvousChannelTest extends AbstractUdtTest {
 
@@ -54,24 +55,19 @@ public class NioUdtMessageRendezvousChannelTest extends AbstractUdtTest {
      * FIXME: Re-enable after making it pass on Windows without unncessary tight loop.
      *        https://github.com/netty/netty/issues/2853
      */
-    @Test(timeout = 10 * 1000)
-    @Ignore
+    @Test
+    @Timeout(value = 10000, unit = TimeUnit.MILLISECONDS)
+    @Disabled
     public void basicEcho() throws Exception {
 
         final int messageSize = 64 * 1024;
         final int transferLimit = messageSize * 16;
 
-        final Meter rate1 = Metrics.newMeter(
-                NioUdtMessageRendezvousChannelTest.class, "send rate", "bytes", TimeUnit.SECONDS);
-
-        final Meter rate2 = Metrics.newMeter(
-                NioUdtMessageRendezvousChannelTest.class, "send rate", "bytes", TimeUnit.SECONDS);
-
         final InetSocketAddress addr1 = UnitHelp.localSocketAddress();
         final InetSocketAddress addr2 = UnitHelp.localSocketAddress();
 
-        final EchoMessageHandler handler1 = new EchoMessageHandler(rate1, messageSize);
-        final EchoMessageHandler handler2 = new EchoMessageHandler(rate2, messageSize);
+        final EchoMessageHandler handler1 = new EchoMessageHandler(messageSize);
+        final EchoMessageHandler handler2 = new EchoMessageHandler(messageSize);
 
         final NioEventLoopGroup group1 = new NioEventLoopGroup(
                 1, Executors.defaultThreadFactory(), NioUdtProvider.MESSAGE_PROVIDER);
@@ -91,11 +87,10 @@ public class NioUdtMessageRendezvousChannelTest extends AbstractUdtTest {
         final ChannelFuture connectFuture1 = boot1.connect();
         final ChannelFuture connectFuture2 = boot2.connect();
 
-        while (handler1.meter().count() < transferLimit
-                && handler2.meter().count() < transferLimit) {
+        while (handler1.counter() < transferLimit
+                && handler2.counter() < transferLimit) {
 
-            log.info("progress : {} {}", handler1.meter().count(), handler2
-                    .meter().count());
+            log.info("progress : {} {}", handler1.counter(), handler2.counter());
 
             Thread.sleep(1000);
         }
@@ -103,13 +98,13 @@ public class NioUdtMessageRendezvousChannelTest extends AbstractUdtTest {
         connectFuture1.channel().close().sync();
         connectFuture2.channel().close().sync();
 
-        log.info("handler1 : {}", handler1.meter().count());
-        log.info("handler2 : {}", handler2.meter().count());
+        log.info("handler1 : {}", handler1.counter());
+        log.info("handler2 : {}", handler2.counter());
 
-        assertTrue(handler1.meter().count() >= transferLimit);
-        assertTrue(handler2.meter().count() >= transferLimit);
+        assertTrue(handler1.counter() >= transferLimit);
+        assertTrue(handler2.counter() >= transferLimit);
 
-        assertEquals(handler1.meter().count(), handler2.meter().count());
+        assertEquals(handler1.counter(), handler2.counter());
 
         group1.shutdownGracefully();
         group2.shutdownGracefully();

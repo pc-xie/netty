@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -36,16 +36,18 @@ import io.netty.util.NetUtil;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.internal.PlatformDependent;
-import org.junit.Assume;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.ThreadFactory;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Verify UDT connect/disconnect life cycle.
@@ -194,14 +196,11 @@ public class UDTClientServerConnectionTest {
         @Override
         public void run() {
             final ServerBootstrap boot = new ServerBootstrap();
-            final ThreadFactory acceptFactory = new DefaultThreadFactory("accept");
-            final ThreadFactory serverFactory = new DefaultThreadFactory("server");
-            final NioEventLoopGroup acceptGroup = new NioEventLoopGroup(1,
-                    acceptFactory, NioUdtProvider.BYTE_PROVIDER);
-            final NioEventLoopGroup connectGroup = new NioEventLoopGroup(1,
-                    serverFactory, NioUdtProvider.BYTE_PROVIDER);
+            final ThreadFactory factory = new DefaultThreadFactory("udp");
+            final NioEventLoopGroup eventLoopGroup = new NioEventLoopGroup(1,
+                    factory, NioUdtProvider.BYTE_PROVIDER);
             try {
-                boot.group(acceptGroup, connectGroup)
+                boot.group(eventLoopGroup)
                         .channelFactory(NioUdtProvider.BYTE_ACCEPTOR)
                         .childHandler(new ChannelInitializer<UdtChannel>() {
                             @Override
@@ -232,11 +231,8 @@ public class UDTClientServerConnectionTest {
             } catch (final Throwable e) {
                 log.error("Server failure.", e);
             } finally {
-                acceptGroup.shutdownGracefully();
-                connectGroup.shutdownGracefully();
-
-                acceptGroup.terminationFuture().syncUninterruptibly();
-                connectGroup.terminationFuture().syncUninterruptibly();
+                eventLoopGroup.shutdownGracefully();
+                eventLoopGroup.terminationFuture().syncUninterruptibly();
             }
         }
 
@@ -336,10 +332,10 @@ public class UDTClientServerConnectionTest {
     static final int WAIT_COUNT = 50;
     static final int WAIT_SLEEP = 100;
 
-    @BeforeClass
+    @BeforeAll
     public static void assumeUdt() {
-        Assume.assumeTrue("com.barchart.udt.SocketUDT can not be loaded and initialized", canLoadAndInit());
-        Assume.assumeFalse("Not supported on J9 JVM", PlatformDependent.isJ9Jvm());
+        assumeTrue(canLoadAndInit(), "com.barchart.udt.SocketUDT can not be loaded and initialized");
+        assumeFalse(PlatformDependent.isJ9Jvm(), "Not supported on J9 JVM");
     }
 
     private static boolean canLoadAndInit() {
@@ -377,7 +373,7 @@ public class UDTClientServerConnectionTest {
         server.waitForActive(true);
 
         log.info("Verify connection is active.");
-        assertEquals("group must have one", 1, server.group.size());
+        assertEquals(1, server.group.size(), "group must have one");
 
         log.info("Stopping client.");
         client.shutdown();
@@ -389,7 +385,7 @@ public class UDTClientServerConnectionTest {
         server.waitForActive(false);
 
         log.info("Verify connection is inactive.");
-        assertEquals("group must be empty", 0, server.group.size());
+        assertEquals(0, server.group.size(), "group must be empty");
 
         log.info("Stopping server.");
         server.shutdown();

@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -25,14 +25,23 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoop;
 import io.netty.channel.ServerChannel;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
+import io.netty.channel.socket.ChannelOutputShutdownEvent;
 import io.netty.handler.codec.http2.Http2FrameCodec.DefaultHttp2FrameStream;
+import io.netty.handler.ssl.SslCloseCompletionEvent;
 import io.netty.util.ReferenceCounted;
 import io.netty.util.internal.ObjectUtil;
-import io.netty.util.internal.UnstableApi;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Queue;
+import java.util.Set;
+import javax.net.ssl.SSLException;
 
+import static io.netty.handler.codec.http2.AbstractHttp2StreamChannel.CHANNEL_INPUT_SHUTDOWN_READ_COMPLETE_VISITOR;
+import static io.netty.handler.codec.http2.AbstractHttp2StreamChannel.CHANNEL_OUTPUT_SHUTDOWN_EVENT_VISITOR;
+import static io.netty.handler.codec.http2.AbstractHttp2StreamChannel.SSL_CLOSE_COMPLETION_EVENT_VISITOR;
 import static io.netty.handler.codec.http2.Http2Error.INTERNAL_ERROR;
 import static io.netty.handler.codec.http2.Http2Exception.connectionError;
 
@@ -40,7 +49,7 @@ import static io.netty.handler.codec.http2.Http2Exception.connectionError;
  * An HTTP/2 handler that creates child channels for each stream. This handler must be used in combination
  * with {@link Http2FrameCodec}.
  *
- * <p>When a new stream is created, a new {@link Channel} is created for it. Applications send and
+ * <p>When a new stream is created, a new {@link Http2StreamChannel} is created for it. Applications send and
  * receive {@link Http2StreamFrame}s on the created channel. {@link ByteBuf}s cannot be processed by the channel;
  * all writes that reach the head of the pipeline must be an instance of {@link Http2StreamFrame}. Writes that reach
  * the head of the pipeline are processed directly by this handler and cannot be intercepted.
@@ -64,7 +73,7 @@ import static io.netty.handler.codec.http2.Http2Exception.connectionError;
  * reference counted objects (e.g. {@link ByteBuf}s). The multiplex codec will call {@link ReferenceCounted#retain()}
  * before propagating a reference counted object through the pipeline, and thus an application handler needs to release
  * such an object after having consumed it. For more information on reference counting take a look at
- * https://netty.io/wiki/reference-counted-objects.html
+ * <a href="https://netty.io/wiki/reference-counted-objects.html">the reference counted docs.</a>
  *
  * <h3>Channel Events</h3>
  *
@@ -81,8 +90,16 @@ import static io.netty.handler.codec.http2.Http2Exception.connectionError;
  * window. {@link ChannelHandler}s are free to ignore the channel's writability, in which case the excessive writes will
  * be buffered by the parent channel. It's important to note that only {@link Http2DataFrame}s are subject to
  * HTTP/2 flow control.
+ *
+ * <h3>Closing a {@link Http2StreamChannel}</h3>
+ *
+ * Once you close a {@link Http2StreamChannel} a {@link Http2ResetFrame} will be sent to the remote peer with
+ * {@link Http2Error#CANCEL} if needed. If you want to close the stream with another {@link Http2Error} (due
+ * errors / limits) you should propagate a {@link Http2FrameStreamException} through the {@link ChannelPipeline}.
+ * Once it reaches the end of the {@link ChannelPipeline} it will automatically close the {@link Http2StreamChannel}
+ * and send a {@link Http2ResetFrame} with the unwrapped {@link Http2Error} set. Another possibility is to just
+ * directly write a {@link Http2ResetFrame} to the {@link Http2StreamChannel}l.
  */
-@UnstableApi
 public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
 
     static final ChannelFutureListener CHILD_CHANNEL_REGISTRATION_LISTENER = new ChannelFutureListener() {
@@ -99,6 +116,16 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
                     // Choose 100 which is what is used most of the times as default.
                     Http2CodecUtil.SMALLEST_MAX_CONCURRENT_STREAMS);
 
+    // Outbound child channels opened via Http2StreamChannelBootstrap that were not closed yet. Until their first
+    // HEADERS frame is written their stream is unknown to the connection, so closing the connection doesn't close them.
+    private final Set<AbstractHttp2StreamChannel> outboundStreamChannels = new HashSet<AbstractHttp2StreamChannel>();
+    // Shared by all outbound child channels: removes a child channel from outboundStreamChannels once it is closed.
+    private final ChannelFutureListener outboundStreamChannelCloseListener = new ChannelFutureListener() {
+        @Override
+        public void operationComplete(ChannelFuture future) {
+            outboundStreamChannels.remove(future.channel());
+        }
+    };
     private boolean parentReadInProgress;
     private int idCount;
 
@@ -156,6 +183,23 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
     }
 
     @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        if (!outboundStreamChannels.isEmpty()) {
+            // The streams known to the connection were closed already. Close the outbound child channels whose
+            // stream was never created as well, so they see channelInactive() and their closeFuture() completes.
+            // Iterate over a copy, as closing a child channel removes it from outboundStreamChannels (see
+            // outboundStreamChannelCloseListener).
+            for (AbstractHttp2StreamChannel childChannel :
+                    new ArrayList<AbstractHttp2StreamChannel>(outboundStreamChannels)) {
+                if (childChannel.stream().state() == Http2Stream.State.IDLE) {
+                    childChannel.unsafe().closeForcibly();
+                }
+            }
+        }
+        ctx.fireChannelInactive();
+    }
+
+    @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         parentReadInProgress = true;
         if (msg instanceof Http2StreamFrame) {
@@ -168,10 +212,10 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
                     (DefaultHttp2FrameStream) streamFrame.stream();
 
             AbstractHttp2StreamChannel channel = (AbstractHttp2StreamChannel) s.attachment;
-            if (msg instanceof Http2ResetFrame) {
-                // Reset frames needs to be propagated via user events as these are not flow-controlled and so
-                // must not be controlled by suppressing channel.read() on the child channel.
-                channel.pipeline().fireUserEventTriggered(msg);
+            if (msg instanceof Http2ResetFrame || msg instanceof Http2PriorityFrame) {
+                // Reset and Priority frames needs to be propagated via user events as these are not flow-controlled and
+                // so must not be controlled by suppressing channel.read() on the child channel.
+                channel.fireChildUserEventTriggered(msg);
 
                 // RST frames will also trigger closing of the streams which then will call
                 // AbstractHttp2StreamChannel.streamClosed()
@@ -255,29 +299,63 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
             }
             return;
         }
+        if (evt == ChannelInputShutdownReadComplete.INSTANCE) {
+            forEachActiveStream(CHANNEL_INPUT_SHUTDOWN_READ_COMPLETE_VISITOR);
+        } else if (evt == ChannelOutputShutdownEvent.INSTANCE) {
+            forEachActiveStream(CHANNEL_OUTPUT_SHUTDOWN_EVENT_VISITOR);
+        } else if (evt == SslCloseCompletionEvent.SUCCESS) {
+            forEachActiveStream(SSL_CLOSE_COMPLETION_EVENT_VISITOR);
+        }
         ctx.fireUserEventTriggered(evt);
     }
 
     // TODO: This is most likely not the best way to expose this, need to think more about it.
     Http2StreamChannel newOutboundStream() {
-        return new Http2MultiplexHandlerStreamChannel((DefaultHttp2FrameStream) newStream(), null);
+        final Http2MultiplexHandlerStreamChannel childChannel =
+                new Http2MultiplexHandlerStreamChannel((DefaultHttp2FrameStream) newStream(), null);
+        outboundStreamChannels.add(childChannel);
+        childChannel.closeFuture().addListener(outboundStreamChannelCloseListener);
+        return childChannel;
     }
 
     @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+    public void exceptionCaught(ChannelHandlerContext ctx, final Throwable cause) throws Exception {
         if (cause instanceof Http2FrameStreamException) {
             Http2FrameStreamException exception = (Http2FrameStreamException) cause;
             Http2FrameStream stream = exception.stream();
             AbstractHttp2StreamChannel childChannel = (AbstractHttp2StreamChannel)
                     ((DefaultHttp2FrameStream) stream).attachment;
             try {
-                childChannel.pipeline().fireExceptionCaught(cause.getCause());
+                childChannel.fireChildExceptionCaught(cause.getCause());
             } finally {
-                childChannel.unsafe().closeForcibly();
+                // Close with the correct error that causes this stream exception.
+                // See https://github.com/netty/netty/issues/13235#issuecomment-1441994672
+                childChannel.closeWithError(exception.error());
             }
             return;
         }
+        if (cause instanceof Http2MultiplexActiveStreamsException) {
+            // Unwrap the cause that was used to create it and fire it for all the active streams.
+            fireExceptionCaughtForActiveStream(cause.getCause());
+            return;
+        }
+
+        if (cause.getCause() instanceof SSLException) {
+            fireExceptionCaughtForActiveStream(cause);
+        }
         ctx.fireExceptionCaught(cause);
+    }
+
+    private void fireExceptionCaughtForActiveStream(final Throwable cause) throws Http2Exception {
+        forEachActiveStream(new Http2FrameStreamVisitor() {
+            @Override
+            public boolean visit(Http2FrameStream stream) {
+                AbstractHttp2StreamChannel childChannel = (AbstractHttp2StreamChannel)
+                        ((DefaultHttp2FrameStream) stream).attachment;
+                childChannel.fireChildExceptionCaught(cause);
+                return true;
+            }
+        });
     }
 
     private static boolean isServer(ChannelHandlerContext ctx) {
@@ -285,6 +363,11 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
     }
 
     private void onHttp2GoAwayFrame(ChannelHandlerContext ctx, final Http2GoAwayFrame goAwayFrame) {
+        if (goAwayFrame.lastStreamId() == Integer.MAX_VALUE) {
+            // None of the streams can have an id greater than Integer.MAX_VALUE
+            return;
+        }
+        // Notify which streams were not processed by the remote peer and are safe to retry on another connection:
         try {
             final boolean server = isServer(ctx);
             forEachActiveStream(new Http2FrameStreamVisitor() {
@@ -294,7 +377,7 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
                     if (streamId > goAwayFrame.lastStreamId() && Http2CodecUtil.isStreamIdValid(streamId, server)) {
                         final AbstractHttp2StreamChannel childChannel = (AbstractHttp2StreamChannel)
                                 ((DefaultHttp2FrameStream) stream).attachment;
-                        childChannel.pipeline().fireUserEventTriggered(goAwayFrame.retainedDuplicate());
+                        childChannel.fireChildUserEventTriggered(goAwayFrame.retainedDuplicate());
                     }
                     return true;
                 }
@@ -362,4 +445,3 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
         }
     }
 }
-

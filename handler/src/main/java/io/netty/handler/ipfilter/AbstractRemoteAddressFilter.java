@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -20,6 +20,7 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.util.internal.PlatformDependent;
 
 import java.net.SocketAddress;
 
@@ -61,11 +62,22 @@ public abstract class AbstractRemoteAddressFilter<T extends SocketAddress> exten
             return false;
         }
 
-        // No need to keep this handler in the pipeline anymore because the decision is going to be made now.
+        // Evaluate the decision before removing this handler from the pipeline, so that if accept(...) throws,
+        // the channel is closed instead of silently continuing through the rest of the pipeline unfiltered.
+        boolean accepted;
+        try {
+            accepted = accept(ctx, remoteAddress);
+        } catch (Throwable cause) {
+            ctx.close();
+            PlatformDependent.throwException(cause);
+            return true;
+        }
+
+        // No need to keep this handler in the pipeline anymore because the decision has been made.
         // Also, this will prevent the subsequent events from being handled by this handler.
         ctx.pipeline().remove(this);
 
-        if (accept(ctx, remoteAddress)) {
+        if (accepted) {
             channelAccepted(ctx, remoteAddress);
         } else {
             ChannelFuture rejectedFuture = channelRejected(ctx, remoteAddress);

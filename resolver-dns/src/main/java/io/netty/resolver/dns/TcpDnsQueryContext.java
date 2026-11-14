@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,33 +17,34 @@ package io.netty.resolver.dns;
 
 import io.netty.channel.AddressedEnvelope;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.handler.codec.dns.DefaultDnsQuery;
 import io.netty.handler.codec.dns.DnsQuery;
 import io.netty.handler.codec.dns.DnsQuestion;
 import io.netty.handler.codec.dns.DnsRecord;
 import io.netty.handler.codec.dns.DnsResponse;
+import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 
 import java.net.InetSocketAddress;
 
 final class TcpDnsQueryContext extends DnsQueryContext {
 
-    private final Channel channel;
-
-    TcpDnsQueryContext(DnsNameResolver parent, Channel channel, InetSocketAddress nameServerAddr, DnsQuestion question,
-                       DnsRecord[] additionals, Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> promise) {
-        super(parent, nameServerAddr, question, additionals, promise);
-        this.channel = channel;
+    TcpDnsQueryContext(Channel channel,
+                       InetSocketAddress nameServerAddr,
+                       DnsQueryContextManager queryContextManager,
+                       int maxPayLoadSize, boolean recursionDesired,
+                       long queryTimeoutMillis,
+                       DnsQuestion question, DnsQuestion wireQuestion, DnsRecord[] additionals,
+                       Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> promise) {
+        super(channel, nameServerAddr, queryContextManager, maxPayLoadSize, recursionDesired,
+                // No retry via TCP.
+                queryTimeoutMillis, question, wireQuestion, additionals, promise, null, false, null);
     }
 
     @Override
-    protected DnsQuery newQuery(int id) {
+    protected DnsQuery newQuery(int id, InetSocketAddress nameServerAddr) {
         return new DefaultDnsQuery(id);
-    }
-
-    @Override
-    protected Channel channel() {
-        return channel;
     }
 
     @Override

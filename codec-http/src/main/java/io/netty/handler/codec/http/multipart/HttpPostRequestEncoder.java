@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -48,6 +48,8 @@ import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.util.Locale;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static io.netty.buffer.Unpooled.wrappedBuffer;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
@@ -89,7 +91,7 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
          * will be treated as distinct fields.
          *
          * Reference:
-         *   http://www.w3.org/TR/html5/forms.html#multipart-form-data
+         *   https://www.w3.org/TR/html5/forms.html#multipart-form-data
          */
         HTML5
     }
@@ -760,7 +762,12 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
             headers.remove(HttpHeaderNames.CONTENT_TYPE);
             for (String contentType : contentTypes) {
                 // "multipart/form-data; boundary=--89421926422648"
-                String lowercased = contentType.toLowerCase();
+                // toLowerCase() without a Locale would corrupt the comparison under Turkish
+                // (tr_TR) locale, where 'I' -> 'ı' (U+0131): a request that sets
+                // Content-Type: MULTIPART/form-data would lowercase to "multıpart/form-data" and
+                // miss the prefix check, leaving the original header in place alongside the
+                // multipart one this encoder is about to add.
+                String lowercased = contentType.toLowerCase(Locale.US);
                 if (lowercased.startsWith(HttpHeaderValues.MULTIPART_FORM_DATA.toString()) ||
                         lowercased.startsWith(HttpHeaderValues.APPLICATION_X_WWW_FORM_URLENCODED.toString())) {
                     // ignore
@@ -943,12 +950,12 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
         // Set name=
         if (isKey) {
             String key = currentData.getName();
-            buffer = wrappedBuffer(key.getBytes());
+            buffer = wrappedBuffer(key.getBytes(charset));
             isKey = false;
             if (currentBuffer == null) {
-                currentBuffer = wrappedBuffer(buffer, wrappedBuffer("=".getBytes()));
+                currentBuffer = wrappedBuffer(buffer, wrappedBuffer("=".getBytes(charset)));
             } else {
-                currentBuffer = wrappedBuffer(currentBuffer, buffer, wrappedBuffer("=".getBytes()));
+                currentBuffer = wrappedBuffer(currentBuffer, buffer, wrappedBuffer("=".getBytes(charset)));
             }
             // continue
             size -= buffer.readableBytes() + 1;
@@ -969,11 +976,13 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
         ByteBuf delimiter = null;
         if (buffer.readableBytes() < size) {
             isKey = true;
-            delimiter = iterator.hasNext() ? wrappedBuffer("&".getBytes()) : null;
+            currentData = null;
+            delimiter = iterator.hasNext() ? wrappedBuffer("&".getBytes(charset)) : null;
         }
 
         // End for current InterfaceHttpData, need potentially more data
         if (buffer.capacity() == 0) {
+            isKey = true;
             currentData = null;
             if (currentBuffer == null) {
                 if (delimiter == null) {
@@ -1008,15 +1017,10 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
             }
         }
 
-        // end for current InterfaceHttpData, need more data
-        if (currentBuffer.readableBytes() < HttpPostBodyUtil.chunkSize) {
-            currentData = null;
-            isKey = true;
-            return null;
+        if (currentBuffer.readableBytes() >= HttpPostBodyUtil.chunkSize) {
+            return new DefaultHttpContent(fillByteBuf());
         }
-
-        buffer = fillByteBuf();
-        return new DefaultHttpContent(buffer);
+        return null;
     }
 
     @Override

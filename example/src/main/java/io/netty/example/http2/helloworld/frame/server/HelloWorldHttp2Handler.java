@@ -5,7 +5,7 @@
  * "License"); you may not use this file except in compliance with the License. You may obtain a
  * copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ * https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
@@ -35,14 +35,13 @@ import static io.netty.buffer.Unpooled.unreleasableBuffer;
 import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 
 /**
- * A simple handler that responds with the message "Hello World!".
- *
- * <p>This example is making use of the "frame codec" http2 API. This API is very experimental and incomplete.
+ * A simple handler that responds with the message "Hello World!" using "frame codec" http2 API.
  */
 @Sharable
 public class HelloWorldHttp2Handler extends ChannelDuplexHandler {
 
-    static final ByteBuf RESPONSE_BYTES = unreleasableBuffer(copiedBuffer("Hello World", CharsetUtil.UTF_8));
+    static final ByteBuf RESPONSE_BYTES = unreleasableBuffer(
+            copiedBuffer("Hello World", CharsetUtil.UTF_8)).asReadOnly();
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {

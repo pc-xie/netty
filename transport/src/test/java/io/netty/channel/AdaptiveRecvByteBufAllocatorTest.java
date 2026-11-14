@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,21 +18,26 @@ package io.netty.channel;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.UnpooledByteBufAllocator;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.Mock;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class AdaptiveRecvByteBufAllocatorTest {
     @Mock
     private ChannelConfig config;
-    private ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
+    private final ByteBufAllocator alloc = UnpooledByteBufAllocator.DEFAULT;
     private RecvByteBufAllocator.ExtendedHandle handle;
 
-    @Before
+    @BeforeEach
     public void setup() {
         config = mock(ChannelConfig.class);
         when(config.isAutoRead()).thenReturn(true);
@@ -96,6 +101,97 @@ public class AdaptiveRecvByteBufAllocatorTest {
 
         handle.reset(config);
         allocReadExpected(handle, alloc, 131072);
+    }
+
+    @Test
+    public void doesNotExceedMaximum() {
+        AdaptiveRecvByteBufAllocator recvByteBufAllocator = new AdaptiveRecvByteBufAllocator(64, 9000, 9000);
+        RecvByteBufAllocator.ExtendedHandle handle =
+                (RecvByteBufAllocator.ExtendedHandle) recvByteBufAllocator.newHandle();
+        handle.reset(config);
+        allocReadExpected(handle, alloc, 8192);
+    }
+
+    @Test
+    public void doesSetCorrectMinBounds() {
+        AdaptiveRecvByteBufAllocator recvByteBufAllocator = new AdaptiveRecvByteBufAllocator(81, 95, 95);
+        RecvByteBufAllocator.ExtendedHandle handle =
+                (RecvByteBufAllocator.ExtendedHandle) recvByteBufAllocator.newHandle();
+        handle.reset(config);
+        allocReadExpected(handle, alloc, 81);
+        assertEquals(81, handle.guess());
+    }
+
+    @ParameterizedTest
+    @CsvSource({ "81, 95, 95", "81, 81, 81", "513, 1023, 1023", "2049, 4095, 4095", "80, 80, 80",
+            "81, 85, 95", "81, 90, 95", "513, 700, 1023", "2049, 3000, 4095" })
+    public void growthStaysWithinBounds(int minimum, int initial, int maximum) {
+        RecvByteBufAllocator.ExtendedHandle h = newHandle(minimum, initial, maximum);
+        assertBetween(h.guess(), minimum, maximum);
+        for (int i = 0; i < 10; i++) {
+            h.reset(config);
+            h.lastBytesRead(h.guess());
+            h.incMessagesRead(1);
+            h.readComplete();
+            assertBetween(h.guess(), minimum, maximum);
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({ "81, 95, 95", "81, 81, 81", "513, 1023, 1023", "2049, 4095, 4095", "80, 80, 80",
+            "81, 85, 95", "81, 90, 95", "513, 700, 1023", "2049, 3000, 4095" })
+    public void shrinkingStaysWithinBounds(int minimum, int initial, int maximum) {
+        RecvByteBufAllocator.ExtendedHandle h = newHandle(minimum, initial, maximum);
+        assertBetween(h.guess(), minimum, maximum);
+        for (int i = 0; i < 10; i++) {
+            h.reset(config);
+            h.lastBytesRead(0);
+            h.incMessagesRead(1);
+            h.readComplete();
+            assertBetween(h.guess(), minimum, maximum);
+        }
+    }
+
+    private RecvByteBufAllocator.ExtendedHandle newHandle(int minimum, int initial, int maximum) {
+        RecvByteBufAllocator.ExtendedHandle h = (RecvByteBufAllocator.ExtendedHandle)
+                new AdaptiveRecvByteBufAllocator(minimum, initial, maximum).newHandle();
+        h.reset(config);
+        return h;
+    }
+
+    private static void assertBetween(int actual, int minimum, int maximum) {
+        assertTrue(actual >= minimum && actual <= maximum,
+                actual + " is not within [" + minimum + ", " + maximum + "]");
+    }
+
+    @Test
+    public void throwsIfInitialIsBiggerThenMaximum() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new AdaptiveRecvByteBufAllocator(64, 4096 , 1024);
+            }
+        });
+    }
+
+    @Test
+    public void throwsIfInitialIsSmallerThenMinimum() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new AdaptiveRecvByteBufAllocator(512, 64 , 1024);
+            }
+        });
+    }
+
+    @Test
+    public void throwsIfMinimumIsBiggerThenMaximum() {
+        assertThrows(IllegalArgumentException.class, new Executable() {
+            @Override
+            public void execute() {
+                new AdaptiveRecvByteBufAllocator(2048, 64 , 1024);
+            }
+        });
     }
 
     private static void allocReadExpected(RecvByteBufAllocator.ExtendedHandle handle,

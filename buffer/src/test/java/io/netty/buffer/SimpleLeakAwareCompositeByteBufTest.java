@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -17,18 +17,18 @@ package io.netty.buffer;
 
 import io.netty.util.ByteProcessor;
 import io.netty.util.ResourceLeakTracker;
-import org.hamcrest.CoreMatchers;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SimpleLeakAwareCompositeByteBufTest extends WrappedCompositeByteBufTest {
 
@@ -47,14 +47,14 @@ public class SimpleLeakAwareCompositeByteBufTest extends WrappedCompositeByteBuf
         return new SimpleLeakAwareCompositeByteBuf(buffer, tracker);
     }
 
-    @Before
+    @BeforeEach
     @Override
     public void init() {
         super.init();
         trackers.clear();
     }
 
-    @After
+    @AfterEach
     @Override
     public void dispose() {
         super.dispose();
@@ -138,9 +138,9 @@ public class SimpleLeakAwareCompositeByteBufTest extends WrappedCompositeByteBuf
     @Test
     public void forEachByteUnderLeakDetectionShouldNotThrowException() {
         CompositeByteBuf buf = (CompositeByteBuf) newBuffer(8);
-        assertThat(buf, CoreMatchers.instanceOf(SimpleLeakAwareCompositeByteBuf.class));
+        assertInstanceOf(SimpleLeakAwareCompositeByteBuf.class, buf);
         CompositeByteBuf comp = (CompositeByteBuf) newBuffer(8);
-        assertThat(comp, CoreMatchers.instanceOf(SimpleLeakAwareCompositeByteBuf.class));
+        assertInstanceOf(SimpleLeakAwareCompositeByteBuf.class, comp);
 
         ByteBuf inner = comp.alloc().directBuffer(1).writeByte(0);
         comp.addComponent(true, inner);

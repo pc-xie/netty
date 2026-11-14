@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -16,10 +16,14 @@
 package io.netty.handler.codec.compression;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.util.internal.SystemPropertyUtil;
 
 import java.nio.ByteBuffer;
 
 final class CompressionUtil {
+
+    static final int DEFAULT_MAX_FORWARD_BYTES = SystemPropertyUtil.getInt(
+            "io.netty.compression.defaultMaxForwardBytes", 64 * 1024);
 
     private CompressionUtil() { }
 
@@ -36,9 +40,8 @@ final class CompressionUtil {
         }
     }
 
-    static ByteBuffer safeNioBuffer(ByteBuf buffer) {
-        return buffer.nioBufferCount() == 1 ? buffer.internalNioBuffer(buffer.readerIndex(), buffer.readableBytes())
-                : buffer.nioBuffer();
+    static ByteBuffer safeReadableNioBuffer(ByteBuf buffer) {
+        return safeNioBuffer(buffer, buffer.readerIndex(), buffer.readableBytes());
     }
 
     static ByteBuffer safeNioBuffer(ByteBuf buffer, int index, int length) {

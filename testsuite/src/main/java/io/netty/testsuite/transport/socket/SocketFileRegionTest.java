@@ -5,7 +5,7 @@
  * version 2.0 (the "License"); you may not use this file except in compliance
  * with the License. You may obtain a copy of the License at:
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
@@ -18,7 +18,6 @@ package io.netty.testsuite.transport.socket;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandler;
@@ -27,20 +26,43 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.DefaultFileRegion;
 import io.netty.channel.FileRegion;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.util.CharsetUtil;
+import io.netty.util.concurrent.ImmediateEventExecutor;
+import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.PlatformDependent;
-import org.hamcrest.CoreMatchers;
-import org.junit.Test;
+import io.netty.util.internal.SuppressJava6Requirement;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.net.URI;
+import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Random;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.*;
+import static io.netty.testsuite.transport.TestsuitePermutation.randomBufferType;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class SocketFileRegionTest extends AbstractSocketTest {
 
@@ -51,33 +73,148 @@ public class SocketFileRegionTest extends AbstractSocketTest {
     }
 
     @Test
-    public void testFileRegion() throws Throwable {
-        run();
+    public void testFileRegion(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFileRegion(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     @Test
-    public void testCustomFileRegion() throws Throwable {
-        run();
+    public void testCustomFileRegion(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testCustomFileRegion(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     @Test
-    public void testFileRegionNotAutoRead() throws Throwable {
-        run();
+    public void testFileRegionNotAutoRead(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFileRegionNotAutoRead(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     @Test
-    public void testFileRegionVoidPromise() throws Throwable {
-        run();
+    public void testFileRegionVoidPromise(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFileRegionVoidPromise(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     @Test
-    public void testFileRegionVoidPromiseNotAutoRead() throws Throwable {
-        run();
+    public void testFileRegionVoidPromiseNotAutoRead(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFileRegionVoidPromiseNotAutoRead(serverBootstrap, bootstrap);
+            }
+        });
     }
 
     @Test
-    public void testFileRegionCountLargerThenFile() throws Throwable {
-        run();
+    public void testFileRegionCountLargerThenFile(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFileRegionCountLargerThenFile(serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    public void testFileRegionBeyond2GiB(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testFileRegionBeyond2GiB(serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    public void testZipFileRegion(TestInfo testInfo, @TempDir final File archive) throws Throwable {
+        assumeTrue(PlatformDependent.javaVersion() >= 7);
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            @SuppressJava6Requirement(reason = "Guarded by version check")
+            public void run(ServerBootstrap sb, Bootstrap cb) throws Throwable {
+                final byte[] data = new byte[256 * 1024 + 73];
+                new Random(0).nextBytes(data);
+                final byte[] expected = Arrays.copyOfRange(data, 37, data.length - 19);
+                URI uri = URI.create("jar:" + new File(archive, "file.zip").toURI());
+                Channel server = null;
+                Channel client = null;
+                final Promise<byte[]> received = ImmediateEventExecutor.INSTANCE.newPromise();
+                final AtomicReference<Channel> child =
+                        new AtomicReference<Channel>();
+                FileSystem zip = null;
+                try {
+                    zip = FileSystems.newFileSystem(uri, Collections.singletonMap("create", "true"));
+                    Path path = zip.getPath("/file");
+                    Files.write(path, data);
+                    sb.childHandler(new SimpleChannelInboundHandler<ByteBuf>() {
+                        private final byte[] bytes = new byte[expected.length];
+                        private int offset;
+
+                        @Override
+                        public void channelActive(ChannelHandlerContext ctx) {
+                            child.set(ctx.channel());
+                        }
+
+                        @Override
+                        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) {
+                            int length = msg.readableBytes();
+                            msg.readBytes(bytes, offset, length);
+                            offset += length;
+                            if (offset == bytes.length) {
+                                received.trySuccess(bytes);
+                            }
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                            received.tryFailure(cause);
+                            ctx.close();
+                        }
+                    });
+                    cb.handler(new ChannelInboundHandlerAdapter());
+                    server = sb.bind().sync().channel();
+                    client = cb.connect(server.localAddress()).sync().channel();
+                    DefaultFileRegion region = new DefaultFileRegion(
+                            FileChannel.open(path, StandardOpenOption.READ), 37, expected.length);
+                    client.writeAndFlush(region).sync();
+                    assertThat(received.get(10, TimeUnit.SECONDS))
+                            .containsExactly(expected);
+                    assertThat(region.refCnt()).isZero();
+                } finally {
+                    if (client != null) {
+                        client.close().syncUninterruptibly();
+                    }
+                    if (child.get() != null) {
+                        child.get().close().syncUninterruptibly();
+                    }
+                    if (server != null) {
+                        server.close().syncUninterruptibly();
+                    }
+                    if (zip != null) {
+                        zip.close();
+                    }
+                }
+            }
+        });
     }
 
     public void testFileRegion(ServerBootstrap sb, Bootstrap cb) throws Throwable {
@@ -100,8 +237,76 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         testFileRegion0(sb, cb, true, false, true);
     }
 
+    /**
+     * Sends {@link DefaultFileRegion}s which start beyond 2 GiB and beyond 4 GiB of a file, so that a transport
+     * which truncates the file offset to an {@code int} either fails or sends the bytes from the wrong offset.
+     */
+    public void testFileRegionBeyond2GiB(ServerBootstrap sb, Bootstrap cb) throws Throwable {
+        final String wrong = "wrong file offset";
+        final String beyond2GiB = "beyond 2 GiB !!!!";
+        final String beyond4GiB = "beyond 4 GiB !!!!";
+        final int length = wrong.length();
+        final long position2GiB = (1L << 31) + 100;
+        final long position4GiB = (1L << 32) + 100;
+
+        // Other file systems (for example NTFS) zero-fill the gap when writing beyond the end of the file, which
+        // would mean writing 4 GiB to the disk.
+        assumeFalse(PlatformDependent.isWindows());
+
+        File file = PlatformDependent.createTempFile("netty-", ".tmp", null);
+        file.deleteOnExit();
+        // Writing beyond the end of the file creates a sparse file on most file systems, so only a few KiB are used.
+        RandomAccessFile raf = new RandomAccessFile(file, "rw");
+        try {
+            // Where the offset ends up if it is truncated to an int.
+            write(raf, wrong, position4GiB & 0xFFFFFFFFL);
+            write(raf, beyond2GiB, position2GiB);
+            write(raf, beyond4GiB, position4GiB);
+        } finally {
+            raf.close();
+        }
+
+        final BlockingQueue<String> received = new LinkedBlockingQueue<String>();
+        sb.childHandler(new ChannelInboundHandlerAdapter() {
+            private final StringBuilder builder = new StringBuilder();
+
+            @Override
+            public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                ByteBuf buf = (ByteBuf) msg;
+                try {
+                    builder.append(buf.toString(CharsetUtil.US_ASCII));
+                } finally {
+                    buf.release();
+                }
+                while (builder.length() >= length) {
+                    received.add(builder.substring(0, length));
+                    builder.delete(0, length);
+                }
+            }
+        });
+        cb.handler(new ChannelInboundHandlerAdapter());
+
+        Channel sc = sb.bind().sync().channel();
+        Channel cc = cb.connect(sc.localAddress()).sync().channel();
+        try {
+            cc.writeAndFlush(new DefaultFileRegion(file, position4GiB, length)).sync();
+            assertEquals(beyond4GiB, received.poll(10, TimeUnit.SECONDS));
+            cc.writeAndFlush(new DefaultFileRegion(file, position2GiB, length)).sync();
+            assertEquals(beyond2GiB, received.poll(10, TimeUnit.SECONDS));
+        } finally {
+            cc.close().sync();
+            sc.close().sync();
+            file.delete();
+        }
+    }
+
+    private static void write(RandomAccessFile raf, String value, long position) throws IOException {
+        raf.seek(position);
+        raf.write(value.getBytes(CharsetUtil.US_ASCII));
+    }
+
     public void testFileRegionCountLargerThenFile(ServerBootstrap sb, Bootstrap cb) throws Throwable {
-        File file = File.createTempFile("netty-", ".tmp");
+        File file = PlatformDependent.createTempFile("netty-", ".tmp", null);
         file.deleteOnExit();
 
         final FileOutputStream out = new FileOutputStream(file);
@@ -123,7 +328,7 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         FileRegion region = new DefaultFileRegion(
                 new RandomAccessFile(file, "r").getChannel(), 0, data.length + 1024);
 
-        assertThat(cc.writeAndFlush(region).await().cause(), CoreMatchers.<Throwable>instanceOf(IOException.class));
+        assertInstanceOf(IOException.class, cc.writeAndFlush(region).await().cause());
         cc.close().sync();
         sc.close().sync();
     }
@@ -135,7 +340,7 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         cb.option(ChannelOption.AUTO_READ, autoRead);
 
         final int bufferSize = 1024;
-        final File file = File.createTempFile("netty-", ".tmp");
+        final File file = PlatformDependent.createTempFile("netty-", ".tmp", null);
         file.deleteOnExit();
 
         final FileOutputStream out = new FileOutputStream(file);
@@ -196,11 +401,13 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         // See https://github.com/netty/netty/issues/2769
         //     https://github.com/netty/netty/issues/2964
         if (voidPromise) {
-            assertEquals(cc.voidPromise(), cc.write(Unpooled.wrappedBuffer(data, 0, bufferSize), cc.voidPromise()));
+            assertEquals(cc.voidPromise(), cc.write(
+                    randomBufferType(cc.alloc(), data, 0, bufferSize), cc.voidPromise()));
             assertEquals(cc.voidPromise(), cc.write(emptyRegion, cc.voidPromise()));
             assertEquals(cc.voidPromise(), cc.writeAndFlush(region, cc.voidPromise()));
         } else {
-            assertNotEquals(cc.voidPromise(), cc.write(Unpooled.wrappedBuffer(data, 0, bufferSize)));
+            assertNotEquals(cc.voidPromise(), cc.write(
+                    randomBufferType(cc.alloc(), data, 0, bufferSize)));
             assertNotEquals(cc.voidPromise(), cc.write(emptyRegion));
             assertNotEquals(cc.voidPromise(), cc.writeAndFlush(region));
         }
@@ -210,11 +417,7 @@ public class SocketFileRegionTest extends AbstractSocketTest {
                 break;
             }
 
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e) {
-                // Ignore.
-            }
+            Thread.sleep(50);
         }
 
         sh.channel.close().sync();
@@ -230,7 +433,7 @@ public class SocketFileRegionTest extends AbstractSocketTest {
         }
 
         // Make sure we did not receive more than we expected.
-        assertThat(sh.counter, is(data.length));
+        assertEquals(data.length, sh.counter);
     }
 
     private static class TestHandler extends SimpleChannelInboundHandler<ByteBuf> {
